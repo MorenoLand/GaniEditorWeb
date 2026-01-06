@@ -209,6 +209,24 @@ class Animation {
 const SPRITE_INDEX_STRING = -21374783;
 const imageLibrary = new Map();
 const soundLibrary = new Map();
+const activeAudioElements = new Set();
+const DEBUG_MODE = false;
+
+function stopAllSounds() {
+    for (const audio of soundLibrary.values()) {
+        if (!audio.paused) {
+            audio.pause();
+            audio.currentTime = 0;
+        }
+    }
+    for (const audio of activeAudioElements) {
+        if (!audio.paused) {
+            audio.pause();
+            audio.currentTime = 0;
+        }
+    }
+    activeAudioElements.clear();
+}
 const ENABLE_F12_LOGGING = false;
 let animations = [];
 let currentTabIndex = 0;
@@ -412,10 +430,24 @@ let dragStartX = 0;
 let dragThreshold = 5;
 let isDraggingFrame = false;
 let dragCurrentX = 0;
+let dragTargetIndex = -1;
 let scrollbarDragStartX = 0;
 let scrollbarDragStartScrollX = 0;
 let timelineScrollX = 0;
 let timelineTotalWidth = 0;
+let dragTab = -1;
+let dragTabStartX = 0;
+let isDraggingTab = false;
+let dragTabCurrentX = 0;
+let dragTabTargetIndex = -1;
+let tabDragIndicator = null;
+let isRightClickPanning = false;
+let rightClickPanStartX = 0;
+let rightClickPanStartY = 0;
+let rightClickPanStartPanX = 0;
+let rightClickPanStartPanY = 0;
+let rightClickPanMoved = false;
+let rightClickJustDragged = false;
 const leftPanel = document.querySelector(".left-panel");
 const rightPanel = document.querySelector(".right-panel");
 const centerPanel = document.querySelector(".center-panel");
@@ -939,9 +971,9 @@ function drawTimeline() {
         timelineCtx.quadraticCurveTo(x + 0.5, headerHeight + 0.5, x + 0.5 + rx, headerHeight + 0.5);
         timelineCtx.closePath();
         timelineCtx.fill();
-        timelineCtx.strokeStyle = "#000000";
-        timelineCtx.lineWidth = 1;
-        timelineCtx.stroke();
+        //timelineCtx.strokeStyle = "#000000"; -- shit looks ugry
+        //timelineCtx.lineWidth = 1;
+        //timelineCtx.stroke();
         const clipX = x + 0.5 + 2;
         const clipY = headerHeight + 14;
         const clipW = frameWidth - 4;
@@ -984,13 +1016,8 @@ function drawTimeline() {
         }
         timelineCtx.restore();
         timelineCtx.fillStyle = "#ffffff";
-        timelineCtx.fillText(String(i), x + frameWidth / 2, headerHeight + 1);
+        timelineCtx.fillText(String(i), x + frameWidth / 2, headerHeight + 3);
         timelineCtx.fillText(`${frame.duration} ms`, x + frameWidth / 2, headerHeight + buttonHeight - 16);
-        if (selected) {
-            timelineCtx.strokeStyle = "#000000";
-            timelineCtx.lineWidth = 1;
-            timelineCtx.strokeRect(x, headerHeight + 0.5, frameWidth, buttonHeight);
-        }
         currentX += frameWidth;
     }
     if (isDraggingFrame && dragFrame >= 0 && dragFrame < currentAnimation.frames.length) {
@@ -1062,6 +1089,26 @@ function drawTimeline() {
         timelineCtx.fillText(String(dragFrame), dragX + frameWidth / 2, headerHeight + 1);
         timelineCtx.fillText(`${frame.duration} ms`, dragX + frameWidth / 2, headerHeight + buttonHeight - 16);
         timelineCtx.globalAlpha = 1.0;
+    }
+    if (isDraggingFrame && dragTargetIndex >= 0 && dragTargetIndex <= currentAnimation.frames.length) {
+        let dropX = 2 - timelineScrollX;
+        const pixelsPerMs = getPixelsPerMs();
+        for (let i = 0; i < currentAnimation.frames.length; i++) {
+            if (i === dragFrame) continue;
+            if (dragTargetIndex <= dragFrame && i >= dragTargetIndex) break;
+            if (dragTargetIndex > dragFrame && i > dragFrame && i >= dragTargetIndex) break;
+            const frame = currentAnimation.frames[i];
+            const frameWidth = Math.max(frame.duration * pixelsPerMs, minFrameWidth);
+            dropX += frameWidth;
+        }
+        if (dropX >= 0 && dropX <= width) {
+            timelineCtx.strokeStyle = "#ffff00";
+            timelineCtx.lineWidth = 3;
+            timelineCtx.beginPath();
+            timelineCtx.moveTo(dropX, headerHeight);
+            timelineCtx.lineTo(dropX, height);
+            timelineCtx.stroke();
+        }
     }
     const startX = Math.floor(-2 / 50) * 50;
     timelineCtx.fillStyle = "#808080";
@@ -1993,6 +2040,12 @@ function updateFrameInfo() {
         document.getElementById("totalDuration").textContent = "0.00s";
         document.getElementById("timelineSlider").max = 0;
         document.getElementById("timelineSlider").value = 0;
+        const framePosition = document.getElementById("framePosition");
+        if (framePosition) {
+            framePosition.value = "0";
+            framePosition.disabled = true;
+            framePosition.max = 0;
+        }
         return;
     }
     document.getElementById("frameCount").textContent = `${currentFrame + 1}/${currentAnimation.frames.length || 1}`;
@@ -2000,6 +2053,12 @@ function updateFrameInfo() {
     document.getElementById("totalDuration").textContent = (totalDuration / 1000).toFixed(2) + "s";
     document.getElementById("timelineSlider").max = Math.max(0, currentAnimation.frames.length - 1);
     document.getElementById("timelineSlider").value = currentFrame;
+    const framePosition = document.getElementById("framePosition");
+    if (framePosition) {
+        framePosition.value = currentFrame;
+        framePosition.max = currentAnimation.frames.length - 1;
+        framePosition.disabled = false;
+    }
     const frame = currentAnimation.getFrame(currentFrame);
     if (frame) {
         document.getElementById("duration").value = frame.duration;
@@ -2526,10 +2585,12 @@ function saveUndoStack() {
     try {
         const undoStack = getCurrentUndoStack();
         const undoIndex = getCurrentUndoIndex();
+        const maxSavedUndo = 10;
+        const startIndex = Math.max(0, undoStack.length - maxSavedUndo);
         const undoData = {
             animationIndex: animations.indexOf(currentAnimation),
             undoIndex: undoIndex,
-            commands: undoStack.map(cmd => ({
+            commands: undoStack.slice(startIndex).map(cmd => ({
                 description: cmd.description,
                 oldState: cmd.oldState || null,
                 newState: cmd.newState || null
@@ -2537,7 +2598,11 @@ function saveUndoStack() {
         };
         localStorage.setItem("ganiEditorUndoStack_" + animations.indexOf(currentAnimation), JSON.stringify(undoData));
     } catch (e) {
-        console.error("Failed to save undo stack:", e);
+        if (e.name === "QuotaExceededError" || e.message.includes("quota")) {
+            console.warn("localStorage quota exceeded, undo history will not persist across sessions");
+        } else {
+            console.error("Failed to save undo stack:", e);
+        }
     }
 }
 
@@ -2764,7 +2829,27 @@ function updateTabs() {
         const tab = document.createElement("div");
         tab.className = "tab" + (i === currentTabIndex ? " active" : "");
         tab.textContent = animations[i].fileName || `Animation ${i + 1}`;
-        tab.onclick = () => switchTab(i);
+        if (isDraggingTab && dragTab === i) {
+            tab.style.opacity = "0.7";
+            tab.style.transform = `translateX(${dragTabCurrentX - dragTabStartX}px)`;
+        }
+        tab.onclick = (e) => {
+            if (!isDraggingTab && !rightClickTabMoved) {
+                switchTab(i);
+            }
+        };
+        tab.addEventListener("mousedown", (e) => {
+            if (e.button === 0) {
+                dragTab = i;
+                dragTabStartX = e.clientX;
+                dragTabCurrentX = e.clientX;
+                isDraggingTab = false;
+            }
+        });
+        tab.oncontextmenu = (e) => {
+            e.preventDefault();
+            showTabContextMenu(e, i);
+        };
         const close = document.createElement("span");
         close.className = "tab-close";
         close.innerHTML = "×";
@@ -2775,11 +2860,178 @@ function updateTabs() {
         tab.appendChild(close);
         container.appendChild(tab);
     }
+    if (isDraggingTab && dragTabTargetIndex >= 0 && dragTabTargetIndex <= animations.length) {
+        const tabs = container.querySelectorAll(".tab");
+        let indicatorX = 0;
+        let indicatorY = container.getBoundingClientRect().top;
+        let indicatorHeight = container.getBoundingClientRect().height;
+        if (dragTabTargetIndex < tabs.length) {
+            const targetTab = tabs[dragTabTargetIndex];
+            const rect = targetTab.getBoundingClientRect();
+            indicatorX = rect.left;
+        } else if (dragTabTargetIndex === tabs.length && tabs.length > 0) {
+            const lastTab = tabs[tabs.length - 1];
+            const rect = lastTab.getBoundingClientRect();
+            indicatorX = rect.right;
+        }
+        if (indicatorX > 0) {
+            if (!tabDragIndicator) {
+                tabDragIndicator = document.createElement("div");
+                tabDragIndicator.style.position = "fixed";
+                tabDragIndicator.style.width = "3px";
+                tabDragIndicator.style.background = "#ffff00";
+                tabDragIndicator.style.pointerEvents = "none";
+                tabDragIndicator.style.zIndex = "1000";
+                document.body.appendChild(tabDragIndicator);
+            }
+            tabDragIndicator.style.left = indicatorX + "px";
+            tabDragIndicator.style.top = indicatorY + "px";
+            tabDragIndicator.style.height = indicatorHeight + "px";
+        }
+    } else {
+        if (tabDragIndicator) {
+            document.body.removeChild(tabDragIndicator);
+            tabDragIndicator = null;
+        }
+    }
+    if (!window.tabDragHandlersBound) {
+        window.tabDragHandlersBound = true;
+        document.addEventListener("mousemove", (e) => {
+            if (dragTab >= 0 && e.buttons === 1) {
+                const deltaX = Math.abs(e.clientX - dragTabStartX);
+                if (deltaX > dragThreshold) {
+                    isDraggingTab = true;
+                }
+                if (isDraggingTab) {
+                    dragTabCurrentX = e.clientX;
+                    updateTabDragTarget(e.clientX);
+                    updateTabs();
+                }
+            }
+        });
+        document.addEventListener("mouseup", (e) => {
+            if (e.button === 0 && dragTab >= 0) {
+                if (isDraggingTab) {
+                    handleTabDrop(dragTab);
+                } else {
+                    switchTab(dragTab);
+                }
+                dragTab = -1;
+                isDraggingTab = false;
+                dragTabTargetIndex = -1;
+                if (tabDragIndicator) {
+                    document.body.removeChild(tabDragIndicator);
+                    tabDragIndicator = null;
+                }
+                updateTabs();
+            }
+        });
+    }
+}
+
+function updateTabDragTarget(clientX) {
+    const container = document.getElementById("tabsContainer");
+    if (!container) return;
+    const tabs = container.querySelectorAll(".tab");
+    let closestEdge = null;
+    let closestDist = Infinity;
+    let targetIndex = dragTab;
+    for (let i = 0; i < tabs.length; i++) {
+        if (i === dragTab) continue;
+        const rect = tabs[i].getBoundingClientRect();
+        const leftDist = Math.abs(clientX - rect.left);
+        const rightDist = Math.abs(clientX - rect.right);
+        if (leftDist < closestDist) {
+            closestDist = leftDist;
+            closestEdge = "left";
+            targetIndex = i;
+        }
+        if (rightDist < closestDist) {
+            closestDist = rightDist;
+            closestEdge = "right";
+            targetIndex = i + 1;
+        }
+    }
+    if (tabs.length > 0 && dragTab < tabs.length) {
+        const lastTab = tabs[tabs.length - 1];
+        const rect = lastTab.getBoundingClientRect();
+        const rightDist = Math.abs(clientX - rect.right);
+        if (rightDist < closestDist) {
+            closestDist = rightDist;
+            closestEdge = "right";
+            targetIndex = tabs.length;
+        }
+    }
+    dragTabTargetIndex = targetIndex;
+}
+
+function handleTabDrop(sourceIndex) {
+    if (dragTabTargetIndex < 0 || dragTabTargetIndex > animations.length || dragTabTargetIndex === sourceIndex) return;
+    if (dragTabTargetIndex === animations.length) dragTabTargetIndex = animations.length - 1;
+    const oldTabOrder = animations.slice();
+    const tabToMove = animations[sourceIndex];
+    animations.splice(sourceIndex, 1);
+    animations.splice(dragTabTargetIndex, 0, tabToMove);
+    const oldCurrentTabIndex = currentTabIndex;
+    if (currentTabIndex === sourceIndex) {
+        currentTabIndex = dragTabTargetIndex;
+        currentAnimation = animations[currentTabIndex];
+    } else if (currentTabIndex > sourceIndex && currentTabIndex <= dragTabTargetIndex) {
+        currentTabIndex--;
+    } else if (currentTabIndex < sourceIndex && currentTabIndex >= dragTabTargetIndex) {
+        currentTabIndex++;
+    }
+    updateTabs();
+    saveSession();
+}
+
+function showTabContextMenu(e, tabIndex) {
+    if (activeContextMenu) {
+        document.body.removeChild(activeContextMenu);
+        activeContextMenu = null;
+    }
+    const menu = document.createElement("div");
+    menu.className = "context-menu";
+    menu.style.position = "fixed";
+    menu.style.left = e.clientX + "px";
+    menu.style.top = e.clientY + "px";
+    menu.style.background = "#444";
+    menu.style.border = "1px solid #555";
+    menu.style.padding = "4px";
+    menu.style.zIndex = "10000";
+    menu.style.minWidth = "100px";
+    const closeItem = document.createElement("div");
+    closeItem.className = "context-menu-item";
+    closeItem.textContent = "Close Tab";
+    closeItem.style.padding = "4px 8px";
+    closeItem.style.cursor = "pointer";
+    closeItem.onmouseover = () => closeItem.style.background = "#555";
+    closeItem.onmouseout = () => closeItem.style.background = "transparent";
+    closeItem.onclick = () => {
+        closeTab(tabIndex);
+        document.body.removeChild(menu);
+        activeContextMenu = null;
+    };
+    menu.appendChild(closeItem);
+    document.body.appendChild(menu);
+    activeContextMenu = menu;
+    const closeMenu = () => {
+        if (activeContextMenu === menu) {
+            document.body.removeChild(menu);
+            activeContextMenu = null;
+            document.removeEventListener("click", closeMenu);
+            document.removeEventListener("mousedown", closeMenu);
+        }
+    };
+    setTimeout(() => {
+        document.addEventListener("click", closeMenu);
+        document.addEventListener("mousedown", closeMenu);
+    }, 0);
 }
 
 let saveSessionDebounceTimer = null;
 function saveSession(immediate = false) {
-    console.log(`saveSession called with immediate=${immediate}`);
+    if (DEBUG_MODE) console.log(`saveSession called with immediate=${immediate}`);
     if (saveSessionDebounceTimer) {
         clearTimeout(saveSessionDebounceTimer);
         saveSessionDebounceTimer = null;
@@ -2914,7 +3166,7 @@ setInterval(() => {
 }, 10000);
 window.addEventListener("load", async () => {
     const loadingDiv = document.createElement("div");
-    loadingDiv.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);color:#fff;font-size:18px;z-index:99999;";
+    loadingDiv.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);color:#ffffff;font-family:'Tempus Sans ITC',sans-serif;text-shadow:1px 1px 1px rgba(0,0,255,1);font-weight:bold;font-size:20px;user-select:none;z-index:99999;";
     loadingDiv.textContent = "Loading AniEditor...";
     document.body.appendChild(loadingDiv);
     await new Promise(resolve => setTimeout(resolve, 0));
@@ -2935,6 +3187,7 @@ window.addEventListener("load", async () => {
         }
     }
     await refreshLocalFileCache();
+    await loadLocalImages();
     resizeCanvas();
     const restored = await restoreSession();
     if (!restored) {
@@ -2991,9 +3244,7 @@ window.addEventListener("load", async () => {
             }
         }, 200);
     }
-    loadLocalImages().then(() => {
-        console.log("Background image loading complete");
-    });
+    if (DEBUG_MODE) console.log("Background image loading complete");
     document.body.removeChild(loadingDiv);
     const spriteList = document.getElementById("spritesList");
     const spriteEditPanel = document.getElementById("spriteEditPanel");
@@ -3665,6 +3916,32 @@ window.addEventListener("load", async () => {
             saveSession();
         }
     };
+    document.getElementById("framePosition").onchange = (e) => {
+        const targetPos = parseInt(e.target.value);
+        const sourcePos = currentFrame;
+        if (isNaN(targetPos) || targetPos < 0 || targetPos >= currentAnimation.frames.length || targetPos === sourcePos) {
+            document.getElementById("framePosition").value = sourcePos;
+            return;
+        }
+        const oldState = serializeAnimationState();
+        const frameToMove = currentAnimation.frames[sourcePos];
+        const targetFrame = currentAnimation.frames[targetPos];
+        currentAnimation.frames[sourcePos] = targetFrame;
+        currentAnimation.frames[targetPos] = frameToMove;
+        currentFrame = targetPos;
+        const newState = serializeAnimationState();
+        addUndoCommand({
+            description: `Swap Frame ${sourcePos} with ${targetPos}`,
+            oldState: oldState,
+            newState: newState,
+            undo: () => restoreAnimationState(oldState),
+            redo: () => restoreAnimationState(newState)
+        });
+        redraw();
+        updateFrameInfo();
+        drawTimeline();
+        saveSession();
+    };
     document.getElementById("btnAddSprite").onclick = () => {
         showAddSpriteDialog();
     };
@@ -3938,6 +4215,7 @@ window.addEventListener("load", async () => {
     document.getElementById("btnPlay").onclick = () => {
         if (isPlaying) {
             isPlaying = false;
+            stopAllSounds();
             document.getElementById("btnPlay").innerHTML = '<i class="fas fa-play"></i>';
         } else {
             isPlaying = true;
@@ -3952,6 +4230,7 @@ window.addEventListener("load", async () => {
         playStartTime = 0;
         playPosition = 0;
         currentFrame = 0;
+        stopAllSounds();
         document.getElementById("btnPlay").innerHTML = '<i class="fas fa-play"></i>';
         redraw();
         updateFrameInfo();
@@ -4027,7 +4306,7 @@ window.addEventListener("load", async () => {
             const frameEndX = currentX + frameWidth;
             const right = frameEndX - 2;
 
-            if (pos.x >= right && pos.x <= right + 4) {
+            if (pos.x >= right && pos.x <= right + 4 && !isDraggingFrame) {
                 timelineCanvas.style.cursor = "ew-resize";
                 desiredResizeFrame = i;
                 return;
@@ -4046,7 +4325,7 @@ window.addEventListener("load", async () => {
         if (isDraggingFrame && dragFrame >= 0) {
             dragCurrentX = pos.x;
             let targetIndex = dragFrame;
-            let x = 2;
+            let x = 2 - timelineScrollX;
             const pixelsPerMs = window.matchMedia && window.matchMedia("(pointer: coarse)").matches ? 1 : 1.5;
             const minFrameWidth = 48;
             for (let i = 0; i < currentAnimation.frames.length; i++) {
@@ -4062,6 +4341,7 @@ window.addEventListener("load", async () => {
                     targetIndex = i + 1;
                 }
             }
+            dragTargetIndex = targetIndex;
             drawTimeline();
         }
 
@@ -4285,7 +4565,7 @@ window.addEventListener("load", async () => {
         if (isDraggingFrame && dragFrame >= 0) {
             dragCurrentX = pos.x;
             let targetIndex = dragFrame;
-            let x = 2;
+            let x = 2 - timelineScrollX;
             const pixelsPerMs = window.matchMedia && window.matchMedia("(pointer: coarse)").matches ? 1 : 1.5;
             const minFrameWidth = 48;
             for (let i = 0; i < currentAnimation.frames.length; i++) {
@@ -4343,7 +4623,7 @@ window.addEventListener("load", async () => {
             const pos = {x: touch.clientX - rect.left, y: touch.clientY - rect.top};
 
             let targetIndex = dragFrame;
-            let x = 2;
+            let x = 2 - timelineScrollX;
             const pixelsPerMs = window.matchMedia && window.matchMedia("(pointer: coarse)").matches ? 1 : 1.5;
             const minFrameWidth = 48;
             for (let i = 0; i < currentAnimation.frames.length; i++) {
@@ -4359,6 +4639,7 @@ window.addEventListener("load", async () => {
                     targetIndex = i + 1;
                 }
             }
+            dragTargetIndex = targetIndex;
 
             if (targetIndex !== dragFrame && targetIndex >= 0 && targetIndex <= currentAnimation.frames.length) {
                 const oldState = serializeAnimationState();
@@ -4384,6 +4665,7 @@ window.addEventListener("load", async () => {
         dragFrame = -1;
         isDraggingFrame = false;
         dragCurrentX = 0;
+        dragTargetIndex = -1;
         timelineTouchStart = null;
         timelineTouchMoved = false;
         drawTimeline();
@@ -4408,7 +4690,7 @@ window.addEventListener("load", async () => {
             dragCurrentX = pos.x;
 
             let targetIndex = dragFrame;
-            let x = 2;
+            let x = 2 - timelineScrollX;
             const pixelsPerMs = window.matchMedia && window.matchMedia("(pointer: coarse)").matches ? 1 : 1.5;
             const minFrameWidth = 48;
             for (let i = 0; i < currentAnimation.frames.length; i++) {
@@ -4424,6 +4706,7 @@ window.addEventListener("load", async () => {
                     targetIndex = i + 1;
                 }
             }
+            dragTargetIndex = targetIndex;
 
             if (targetIndex !== dragFrame && targetIndex >= 0 && targetIndex <= currentAnimation.frames.length) {
                 const oldState = serializeAnimationState();
@@ -4448,6 +4731,7 @@ window.addEventListener("load", async () => {
         dragFrame = -1;
         isDraggingFrame = false;
         dragCurrentX = 0;
+        dragTargetIndex = -1;
         timelineCanvas.style.cursor = "default";
         drawTimeline();
     };
@@ -5384,7 +5668,15 @@ window.addEventListener("load", async () => {
         const zoom = zoomFactors[zoomLevel] || 1.0;
         const x = (e.clientX - rect.left - width / 2 - panX) / zoom;
         const y = (e.clientY - rect.top - height / 2 - panY) / zoom;
-        if (e.button === 1 || (e.button === 0 && e.ctrlKey)) {
+        if (e.button === 2) {
+            isRightClickPanning = true;
+            rightClickPanStartX = e.clientX;
+            rightClickPanStartY = e.clientY;
+            rightClickPanStartPanX = panX;
+            rightClickPanStartPanY = panY;
+            mainCanvas.style.cursor = "grabbing";
+            e.preventDefault();
+        } else if (e.button === 1 || (e.button === 0 && e.ctrlKey)) {
             isPanning = true;
             panStartX = e.clientX - panX;
             panStartY = e.clientY - panY;
@@ -5512,20 +5804,14 @@ window.addEventListener("load", async () => {
                 }
             }
         } else if (e.button === 2) {
-            if (insertPiece) {
-                insertPiece = null;
-                mainCanvas.style.cursor = "default";
-                redraw();
-                return;
-            }
-            if (selectedPieces.size > 0) {
-                selectedPieces.clear();
-                updateItemsCombo();
-                redraw();
-            } else {
-                e.preventDefault();
-                showCanvasContextMenu(e);
-            }
+            isRightClickPanning = true;
+            rightClickPanMoved = false;
+            rightClickPanStartX = e.clientX;
+            rightClickPanStartY = e.clientY;
+            rightClickPanStartPanX = panX;
+            rightClickPanStartPanY = panY;
+            mainCanvas.style.cursor = "grabbing";
+            e.preventDefault();
         }
         redraw();
     };
@@ -5539,7 +5825,16 @@ window.addEventListener("load", async () => {
         const zoom = zoomFactors[zoomLevel] || 1.0;
         const x = (e.clientX - rect.left - width / 2 - panX) / zoom;
         const y = (e.clientY - rect.top - height / 2 - panY) / zoom;
-        if (isPanning) {
+        if (isRightClickPanning) {
+            const deltaX = Math.abs(e.clientX - rightClickPanStartX);
+            const deltaY = Math.abs(e.clientY - rightClickPanStartY);
+            if (deltaX > dragThreshold || deltaY > dragThreshold) {
+                rightClickPanMoved = true;
+            }
+            panX = rightClickPanStartPanX + (e.clientX - rightClickPanStartX);
+            panY = rightClickPanStartPanY + (e.clientY - rightClickPanStartY);
+            redraw();
+        } else if (isPanning) {
             panX = e.clientX - panStartX;
             panY = e.clientY - panStartY;
             redraw();
@@ -5566,6 +5861,26 @@ window.addEventListener("load", async () => {
         }
     };
     mainCanvas.onmouseup = (e) => {
+        if (e.button === 2 && isRightClickPanning) {
+            if (rightClickPanMoved) {
+                rightClickJustDragged = true;
+            } else {
+                if (insertPiece) {
+                    insertPiece = null;
+                    mainCanvas.style.cursor = "default";
+                    redraw();
+                } else if (selectedPieces.size > 0) {
+                    selectedPieces.clear();
+                    updateItemsCombo();
+                    redraw();
+                } else {
+                    showCanvasContextMenu(e);
+                }
+            }
+            isRightClickPanning = false;
+            rightClickPanMoved = false;
+            mainCanvas.style.cursor = "default";
+        }
         if (isPanning && (e.button === 1 || e.button === 0)) {
             isPanning = false;
             mainCanvas.style.cursor = "default";
@@ -5662,7 +5977,10 @@ window.addEventListener("load", async () => {
         e.preventDefault();
         e.stopPropagation();
         e.stopImmediatePropagation();
-        showCanvasContextMenu(e);
+        if (!rightClickJustDragged) {
+            showCanvasContextMenu(e);
+        }
+        rightClickJustDragged = false;
     };
 
     let touchStartTime = 0;
@@ -6001,6 +6319,7 @@ function playAnimation() {
                     if (soundLibrary.has(baseName.toLowerCase())) {
                         const audio = soundLibrary.get(baseName.toLowerCase());
                         audio.currentTime = 0;
+                        activeAudioElements.add(audio);
                         audio.play().catch(() => {});
                         continue;
                     }
@@ -6034,6 +6353,10 @@ function playAnimation() {
                     let currentIndex = 0;
                     const audio = new Audio();
                     audio.volume = 0.5;
+                    activeAudioElements.add(audio);
+                    audio.onended = () => {
+                        activeAudioElements.delete(audio);
+                    };
                     audio.onerror = () => {
                         if (!audioLoaded && currentIndex < pathsToTry.length) {
                             const path = pathsToTry[currentIndex++];
@@ -7537,6 +7860,7 @@ function showColorPickerDialog(currentColor, callback) {
         };
     });
 }
+
 
 
 
