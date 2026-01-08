@@ -208,6 +208,35 @@ class Animation {
 
 const SPRITE_INDEX_STRING = -21374783;
 const imageLibrary = new Map();
+let volumeIconImage = null;
+const PNG_SIG = new Uint8Array([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+const MNG_SIG = new Uint8Array([0x8A, 0x4D, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+function extractFirstFrame(buffer) {
+    const data = new Uint8Array(buffer);
+    const view = new DataView(buffer);
+    let pos = 8;
+    let ihdrStart = -1;
+    let iendEnd = -1;
+    while (pos < data.length) {
+        const length = view.getUint32(pos);
+        const type = String.fromCharCode(...data.slice(pos + 4, pos + 8));
+        if (type === 'IHDR' && ihdrStart === -1) ihdrStart = pos;
+        if (type === 'IEND' && ihdrStart !== -1) {
+            iendEnd = pos + length + 12;
+            break;
+        }
+        pos += length + 12;
+    }
+    if (ihdrStart === -1 || iendEnd === -1) throw new Error('No valid PNG frame found');
+    const frameData = data.slice(ihdrStart, iendEnd);
+    const pngData = new Uint8Array(PNG_SIG.length + frameData.length);
+    pngData.set(PNG_SIG);
+    pngData.set(frameData, PNG_SIG.length);
+    return pngData;
+}
+const volumeIconImg = new Image();
+volumeIconImg.onload = () => { volumeIconImage = volumeIconImg; };
+volumeIconImg.src = "icons/volume-high.svg";
 const soundLibrary = new Map();
 const activeAudioElements = new Set();
 const DEBUG_MODE = false;
@@ -281,7 +310,7 @@ function f12Log(message) {
                 context = tabIndex >= 0 ? `Animation ${tabIndex + 1}` : 'unnamed';
             }
         }
-        console.log(`[${context}:${funcName}] ${message}`);
+        if (DEBUG_MODE) console.log(`[${context}:${funcName}] ${message}`);
     } catch (e) {
         let context = 'no-animation';
         if (currentAnimation) {
@@ -292,7 +321,7 @@ function f12Log(message) {
                 context = tabIndex >= 0 ? `Animation ${tabIndex + 1}` : 'unnamed';
             }
         }
-        console.log(`[${context}:unknown] ${message}`);
+        if (DEBUG_MODE) console.log(`[${context}:unknown] ${message}`);
     }
 }
 function getDirIndex(comboIndex) {
@@ -322,7 +351,11 @@ let workingDirectory = "";
 let lastWorkingDirectory = localStorage.getItem("ganiEditorLastWorkingDir") || "";
 let lastOpenDirectory = localStorage.getItem("ganiEditorLastOpenDir") || "";
 let onionSkinEnabled = false;
-let maxUndo = 50;
+let maxUndo = 30;
+let redrawScheduled = false;
+let redrawRafId = null;
+let soundIconCache = { yellow: null, green: null };
+let lastSerializedState = null;
 function getCurrentUndoStack() {
     if (!currentAnimation) return [];
     if (!currentAnimation.undoStack) currentAnimation.undoStack = [];
@@ -451,6 +484,24 @@ let rightClickJustDragged = false;
 const leftPanel = document.querySelector(".left-panel");
 const rightPanel = document.querySelector(".right-panel");
 const centerPanel = document.querySelector(".center-panel");
+function updateSpinnerStates() {
+    document.querySelectorAll('input[type="number"]').forEach(input => {
+        const wrapper = input.closest('.number-input-wrapper');
+        if (!wrapper) return;
+        const spinnerContainer = wrapper.querySelector('.number-spinner-container');
+        if (!spinnerContainer) return;
+        const spinners = spinnerContainer.querySelectorAll('.number-spinner');
+        spinners.forEach(spinner => {
+            if (input.disabled) {
+                spinner.style.pointerEvents = 'none';
+                spinner.style.opacity = '0.5';
+            } else {
+                spinner.style.pointerEvents = 'auto';
+                spinner.style.opacity = '1';
+            }
+        });
+    });
+}
 
 function resizeCanvas() {
     const container = centerPanel;
@@ -529,26 +580,71 @@ function resizeCanvas() {
     redraw();
     if (currentAnimation) {
         setTimeout(() => {
-            drawTimeline();
+            let timelineVisible = localStorage.getItem("timelineVisible");
+            if (timelineVisible === null) {
+                timelineVisible = "true";
+                localStorage.setItem("timelineVisible", "true");
+            }
+            timelineVisible = timelineVisible !== "false";
             const timelineContainer = document.querySelector(".timeline-container");
             const timelineView = document.querySelector(".timeline-view");
             const canvas = document.getElementById("timelineCanvas");
+            const canvasTimelineSplitter = document.getElementById("canvasTimelineSplitter");
+            if (timelineVisible) {
+                drawTimeline();
             if (timelineContainer) {
                 timelineContainer.style.display = "flex";
                 timelineContainer.style.visibility = "visible";
+                    timelineContainer.style.opacity = "1";
             }
             if (timelineView) {
                 timelineView.style.display = "block";
                 timelineView.style.visibility = "visible";
+                    timelineView.style.opacity = "1";
             }
             if (canvas) {
                 canvas.style.display = "block";
                 canvas.style.visibility = "visible";
+                    canvas.style.opacity = "1";
+                }
+                if (canvasTimelineSplitter) {
+                    canvasTimelineSplitter.style.display = "block";
+                    canvasTimelineSplitter.style.visibility = "visible";
+                    canvasTimelineSplitter.style.opacity = "1";
+                }
+            } else {
+                if (timelineContainer) {
+                    timelineContainer.style.setProperty("display", "none", "important");
+                    timelineContainer.style.setProperty("visibility", "hidden", "important");
+                    timelineContainer.style.setProperty("opacity", "0", "important");
+                    timelineContainer.style.setProperty("flex", "0 0 0px", "important");
+                    timelineContainer.style.setProperty("height", "0px", "important");
+                }
+                if (timelineView) {
+                    timelineView.style.setProperty("display", "none", "important");
+                    timelineView.style.setProperty("visibility", "hidden", "important");
+                    timelineView.style.setProperty("opacity", "0", "important");
+                }
+                if (canvasTimelineSplitter) {
+                    canvasTimelineSplitter.style.setProperty("display", "none", "important");
+                    canvasTimelineSplitter.style.setProperty("visibility", "hidden", "important");
+                    canvasTimelineSplitter.style.setProperty("opacity", "0", "important");
+                }
             }
         }, 10);
     }
 }
 
+function getFontFamily(font) {
+    const customFonts = ["PressStart2P", "Silkscreen", "Tempus Sans ITC", "MesloLGS NF", "chevyray", "chevyrayOeuf"];
+    if (customFonts.includes(font)) {
+        return `"${font}", monospace`;
+    } else if (font === "monospace") {
+        return "monospace";
+    } else {
+        return font;
+    }
+}
 function lightenColor(color, amount) {
     const num = parseInt(color.replace("#", ""), 16);
     const r = Math.min(255, Math.floor((num >> 16) + amount * (255 - (num >> 16))));
@@ -587,6 +683,7 @@ function drawGrid(ctx) {
 function drawSprite(ctx, sprite, x, y, level = 0) {
     if (level > 3) return;
     if (!sprite) return;
+    ctx.imageSmoothingEnabled = false;
     for (let i = 0; i < sprite.m_drawIndex && i < sprite.attachedSprites.length; i++) {
         const attached = sprite.attachedSprites[i];
         const child = currentAnimation.getAniSprite(attached.index, "");
@@ -594,27 +691,85 @@ function drawSprite(ctx, sprite, x, y, level = 0) {
     }
     const img = getSpriteImage(sprite);
     if (img) {
+        const imageName = sprite.type === "CUSTOM" ? sprite.customImageName.toLowerCase() : (currentAnimation ? currentAnimation.getDefaultImageName(sprite.type) : "").toLowerCase();
+        const isLightImage = localStorage.getItem("editorLightEffects") !== "false" && (imageName.includes("light") || sprite.comment.toLowerCase().includes("light"));
         ctx.save();
-        ctx.translate(x, y);
+        ctx.imageSmoothingEnabled = false;
+        ctx.translate(Math.round(x), Math.round(y));
         if (sprite.rotation !== 0 || sprite.xscale !== 1 || sprite.yscale !== 1) {
             ctx.translate(sprite.width / 2, sprite.height / 2);
             ctx.scale(sprite.xscale, sprite.yscale);
             ctx.rotate(sprite.rotation * Math.PI / 180);
             ctx.translate(-sprite.width / 2, -sprite.height / 2);
         }
+        if (isLightImage) {
+            const colorKey = sprite.colorEffectEnabled && sprite.colorEffect ? `${sprite.colorEffect.r},${sprite.colorEffect.g},${sprite.colorEffect.b},${sprite.colorEffect.a}` : "none";
+            const cacheKey = `${img.src}_${colorKey}`;
+            if (!sprite._lightCanvas || sprite._lightCacheKey !== cacheKey) {
+                const tempCanvas = document.createElement("canvas");
+                tempCanvas.width = sprite.width;
+                tempCanvas.height = sprite.height;
+                const tempCtx = tempCanvas.getContext("2d");
+                tempCtx.imageSmoothingEnabled = false;
+                tempCtx.drawImage(img, sprite.left, sprite.top, sprite.width, sprite.height, 0, 0, sprite.width, sprite.height);
         if (sprite.colorEffectEnabled && sprite.colorEffect) {
+                    tempCtx.globalCompositeOperation = "multiply";
+                    tempCtx.fillStyle = `rgb(${sprite.colorEffect.r}, ${sprite.colorEffect.g}, ${sprite.colorEffect.b})`;
+                    tempCtx.fillRect(0, 0, sprite.width, sprite.height);
+                    tempCtx.globalCompositeOperation = "destination-in";
+                    tempCtx.drawImage(img, sprite.left, sprite.top, sprite.width, sprite.height, 0, 0, sprite.width, sprite.height);
+                }
+                const imageData = tempCtx.getImageData(0, 0, sprite.width, sprite.height);
+                const data = imageData.data;
+                for (let i = 0; i < data.length; i += 4) {
+                    const r = data[i];
+                    const g = data[i + 1];
+                    const b = data[i + 2];
+                    const a = data[i + 3];
+                    const brightness = (r + g + b) / 3;
+                    if (brightness < 30) {
+                        data[i + 3] = 0;
+                    } else {
+                        const alpha = Math.min(255, brightness * 1.2);
+                        data[i + 3] = Math.floor(alpha * (a / 255) * 0.7);
+                    }
+                }
+                tempCtx.putImageData(imageData, 0, 0);
+                sprite._lightCanvas = tempCanvas;
+                sprite._lightCacheKey = cacheKey;
+            }
+            ctx.globalCompositeOperation = "lighter";
+            for (let glowPass = 0; glowPass < 3; glowPass++) {
+                const scale = 1.0 + (glowPass * 0.2);
+                const offsetX = (sprite.width * (scale - 1.0)) / 2;
+                const offsetY = (sprite.height * (scale - 1.0)) / 2;
+                ctx.globalAlpha = 0.6 / (glowPass + 1);
+                ctx.drawImage(sprite._lightCanvas, -offsetX, -offsetY, sprite.width * scale, sprite.height * scale);
+            }
+            ctx.globalCompositeOperation = "source-over";
+            ctx.globalAlpha = 1.0;
+        } else if (sprite.colorEffectEnabled && sprite.colorEffect) {
+            const colorKey = `${sprite.colorEffect.r},${sprite.colorEffect.g},${sprite.colorEffect.b},${sprite.colorEffect.a}`;
+            if (!sprite._cachedColorCanvas || sprite._cachedColorKey !== colorKey || sprite._cachedImageSrc !== img.src) {
             const tempCanvas = document.createElement("canvas");
             tempCanvas.width = sprite.width;
             tempCanvas.height = sprite.height;
             const tempCtx = tempCanvas.getContext("2d");
+                tempCtx.imageSmoothingEnabled = false;
             tempCtx.drawImage(img, sprite.left, sprite.top, sprite.width, sprite.height, 0, 0, sprite.width, sprite.height);
             tempCtx.globalCompositeOperation = "multiply";
             tempCtx.fillStyle = `rgb(${sprite.colorEffect.r}, ${sprite.colorEffect.g}, ${sprite.colorEffect.b})`;
             tempCtx.fillRect(0, 0, sprite.width, sprite.height);
             tempCtx.globalCompositeOperation = "destination-in";
             tempCtx.drawImage(img, sprite.left, sprite.top, sprite.width, sprite.height, 0, 0, sprite.width, sprite.height);
-            ctx.drawImage(tempCanvas, 0, 0);
+                sprite._cachedColorCanvas = tempCanvas;
+                sprite._cachedColorKey = colorKey;
+                sprite._cachedImageSrc = img.src;
+            }
+            ctx.imageSmoothingEnabled = false;
+            ctx.drawImage(sprite._cachedColorCanvas, 0, 0);
         } else {
+            ctx.imageSmoothingEnabled = false;
             ctx.drawImage(img, sprite.left, sprite.top, sprite.width, sprite.height, 0, 0, sprite.width, sprite.height);
         }
         ctx.restore();
@@ -652,13 +807,17 @@ function drawSprite(ctx, sprite, x, y, level = 0) {
 }
 
 function getSpriteImage(sprite) {
+    let img = null;
+    let imageKey = null;
     if (sprite.type === "CUSTOM") {
-        return imageLibrary.get(sprite.customImageName.toLowerCase()) || null;
-    }
+        imageKey = sprite.customImageName.toLowerCase();
+        img = imageLibrary.get(imageKey) || null;
+    } else {
     let defaultName = currentAnimation ? currentAnimation.getDefaultImageName(sprite.type) : "";
     if (defaultName && imageLibrary.has(defaultName.toLowerCase())) {
-        return imageLibrary.get(defaultName.toLowerCase());
-    }
+            imageKey = defaultName.toLowerCase();
+            img = imageLibrary.get(imageKey);
+        } else {
     const fallbackNames = {
         "SHIELD": "shield1.png",
         "SWORD": "sword1.png",
@@ -671,26 +830,40 @@ function getSpriteImage(sprite) {
     if (!defaultName) {
         const fallback = fallbackNames[sprite.type];
         if (fallback && imageLibrary.has(fallback.toLowerCase())) {
-            return imageLibrary.get(fallback.toLowerCase());
+                    imageKey = fallback.toLowerCase();
+                    img = imageLibrary.get(imageKey);
         }
     }
-    if (!defaultName || !imageLibrary.has(defaultName.toLowerCase())) {
+            if (!img) {
         for (const otherAni of animations) {
             const otherDefault = otherAni.getDefaultImageName(sprite.type);
             if (otherDefault && imageLibrary.has(otherDefault.toLowerCase())) {
                 defaultName = otherDefault;
-                return imageLibrary.get(defaultName.toLowerCase());
+                        imageKey = defaultName.toLowerCase();
+                        img = imageLibrary.get(imageKey);
+                        break;
             }
         }
     }
+            if (!img) {
     const fallback = fallbackNames[sprite.type];
     if (fallback && imageLibrary.has(fallback.toLowerCase())) {
-        return imageLibrary.get(fallback.toLowerCase());
+                    imageKey = fallback.toLowerCase();
+                    img = imageLibrary.get(imageKey);
+                }
+            }
+        }
     }
-    return null;
+    return img;
 }
 
-async function loadLocalImages() {
+async function loadLocalImages(loading) {
+    const updateProgress = (current, total) => {
+        if (loading) {
+            const percent = total > 0 ? Math.round((current / total) * 100) : 0;
+            loading.update(`Loading Gani Editor... ${percent}%`);
+        }
+    };
     const fallbackImages = ["2002_32x32sprites-flame.png","arrowsbox.png","baddyblue.png","baddydragon.png","baddygold.png","baddygray.png","baddyhare.png","baddylizardon.png","baddyninja.png","baddyoctopus.png","baddyred.png","baddytest.png","bcalarmclock.png","bigshield.png","block.png","bluelampani.mng","bluelampani2.mng","blueletters.png","body.png","body2.png","body3.png","body4.png","bomb1.png","bomb2.png","brother1.png","brother2.png","bshield0.png","chest.png","chestopen.png","door.png","door1.png","editorcursor.png","emoticon_AFK_stay.mng","emoticon_BRB_stay.mng","emoticon_conf.png","emoticon_Dgrin.png","emoticon_Eyes.mng","emoticon_Frown.png","emoticon_Grr.png","emoticon_Heart.png","emoticon_Idea.png","emoticon_jpm_stay.mng","emoticon_kitty.png","emoticon_LOL.mng","emoticon_Maybe.png","emoticon_Ncool.png","emoticon_Ohh.png","emoticon_Ptongue.mng","emoticon_Qphone_stay.png","emoticon_ROFL.mng","emoticon_Smile.png","emoticon_Tears.mng","emoticon_Umad.png","emoticon_Vsorry.mng","emoticon_Wink.png","emoticon_XX.png","emoticon_Yummy.png","emoticon_Zzz_stay.mng","emoticonbubbles.png","emoticonmicro.png","emotions_template.png","g4_animation_fire.gif","g4_particle_bluelight.png","g4_particle_bluex.png","g4_particle_bubble.png","g4_particle_cloud.png","g4_particle_halo.png","g4_particle_leaf.png","g4_particle_minus.png","g4_particle_ring.png","g4_particle_sbubble.png","g4_particle_smoke.png","g4_particle_spark.png","g4_particle_sun.png","g4_particle_tornado.png","g4_particle_whitespot.png","g4_particle_x.png","g4_particle_yellowlight.png","gate1.png","gate2.png","ghostanimation.png","ghostshadow.png","graal2002letters.png","gralats.png","hat0.png","hat1.png","hat2.png","haticon.png","head0.png","head19.png","head23.png","headnpc.png","khairs0.png","khead0.png","klegs0.png","kmarms100.png","kmbody100.png","lamps_wood.png","letters.png","light2.png","opps.png","pics1.png","ride.png","ride2.png","ride3.png","shield1.png","shield2.png","shield3.png","skip_icon.png","skip.png","sprites.png","state.png","sword1.png","treeview_foldericons.png","tutorial_arrowdown.png"];
     let imageFiles = [];
     try {
@@ -704,39 +877,58 @@ async function loadLocalImages() {
                 const href = link.getAttribute('href');
                 if (href && !href.endsWith('/') && !href.startsWith('?') && !href.startsWith('#') && !href.startsWith('../')) {
                     const lowerHref = href.toLowerCase();
-                    if (lowerHref.endsWith('.png') || lowerHref.endsWith('.gif') || lowerHref.endsWith('.jpg') || lowerHref.endsWith('.jpeg') || lowerHref.endsWith('.bmp')) {
+                    if (lowerHref.endsWith('.png') || lowerHref.endsWith('.gif') || lowerHref.endsWith('.jpg') || lowerHref.endsWith('.jpeg') || lowerHref.endsWith('.bmp') || lowerHref.endsWith('.mng')) {
                         imageFiles.push(href);
                     }
                 }
             }
         }
     } catch (e) {
-        console.warn('Dynamic image loading failed, using fallback list');
+        if (DEBUG_MODE) console.warn('Dynamic image loading failed, using fallback list');
     }
     if (imageFiles.length === 0) imageFiles = fallbackImages;
+    const totalFiles = imageFiles.length;
     const chunkSize = 10;
+    let loadedCount = 0;
+    updateProgress(0, totalFiles);
     for (let i = 0; i < imageFiles.length; i += chunkSize) {
         const chunk = imageFiles.slice(i, i + chunkSize);
         await Promise.all(chunk.map(fileName => {
             if (!imageLibrary.has(fileName.toLowerCase())) {
                 return new Promise(resolve => {
-                    const img = new Image();
-                    img.onload = () => {
-                        imageLibrary.set(fileName.toLowerCase(), img);
+                    loadImageFromUrl(`images/${fileName}`, fileName.toLowerCase())
+                        .then(() => {
+                            loadedCount++;
+                            updateProgress(loadedCount, totalFiles);
                         resolve();
-                    };
-                    img.onerror = () => resolve();
-                    img.src = `images/${fileName}`;
+                        })
+                        .catch(() => {
+                            loadedCount++;
+                            updateProgress(loadedCount, totalFiles);
+                            resolve();
+                        });
                 });
-            }
+            } else {
+                loadedCount++;
+                updateProgress(loadedCount, totalFiles);
             return Promise.resolve();
+            }
         }));
         await new Promise(resolve => setTimeout(resolve, 0));
     }
 }
 
 function redraw() {
+    if (redrawScheduled) return;
+    redrawScheduled = true;
+    if (redrawRafId !== null) {
+        cancelAnimationFrame(redrawRafId);
+    }
+    redrawRafId = requestAnimationFrame(() => {
+        redrawScheduled = false;
+        redrawRafId = null;
     const ctx = mainCtx;
+        ctx.imageSmoothingEnabled = false;
     const width = mainCanvas.width / dpr;
     const height = mainCanvas.height / dpr;
     ctx.save();
@@ -753,7 +945,10 @@ function redraw() {
     ctx.save();
     ctx.translate(width / 2 + panX, height / 2 + panY);
     ctx.scale(scale, scale);
+        const showGrid = localStorage.getItem("editorShowGrid") !== "false";
+        if (showGrid) {
     drawGrid(ctx);
+        }
     const frame = currentAnimation.getFrame(currentFrame);
     if (frame) {
         if (onionSkinEnabled) {
@@ -812,10 +1007,12 @@ function redraw() {
     } else {
         mainCanvas.style.cursor = "default";
     }
+    });
 }
 
 function drawFrame(ctx, frame, dir) {
     if (!frame) return;
+    ctx.imageSmoothingEnabled = false;
     const actualDir = currentAnimation.singleDir ? 0 : (typeof dir === 'number' ? getDirIndex(dir) : getDirIndex(dir));
     const pieces = frame.pieces[actualDir] || [];
     if (pieces.length === 0 && frame.pieces.some(dp => dp.length > 0)) {
@@ -831,10 +1028,11 @@ function drawFrame(ctx, frame, dir) {
                     ctx.strokeStyle = "#00ff00";
                     ctx.lineWidth = 2;
                     const bb = piece.getBoundingBox(currentAnimation);
-                    ctx.strokeRect(bb.x - 2, bb.y - 2, bb.width + 4, bb.height + 4);
+                    ctx.strokeRect(Math.round(bb.x - 2), Math.round(bb.y - 2), Math.round(bb.width + 4), Math.round(bb.height + 4));
                 }
                 ctx.save();
-                ctx.translate(piece.xoffset, piece.yoffset);
+                ctx.imageSmoothingEnabled = false;
+                ctx.translate(Math.round(piece.xoffset), Math.round(piece.yoffset));
                 if (piece.rotation !== 0 || piece.xscale !== 1 || piece.yscale !== 1) {
                     const spriteSize = piece.getSize(currentAnimation);
                     ctx.translate(spriteSize.width / 2, spriteSize.height / 2);
@@ -856,15 +1054,68 @@ function drawFrame(ctx, frame, dir) {
     if (frame.sounds && frame.sounds.length > 0) {
         for (const sound of frame.sounds) {
             const isSelected = selectedPieces.has(sound);
+            if (volumeIconImage) {
+                ctx.save();
+                ctx.globalAlpha = 1;
+                const iconSize = 16;
+                const x = sound.xoffset - iconSize / 2;
+                const y = sound.yoffset - iconSize / 2;
+                const cacheKey = isSelected ? "green" : "yellow";
+                let cachedIcon = soundIconCache[cacheKey];
+                if (!cachedIcon) {
+                    cachedIcon = document.createElement("canvas");
+                    cachedIcon.width = iconSize;
+                    cachedIcon.height = iconSize;
+                    const tempCtx = cachedIcon.getContext("2d");
+                    tempCtx.drawImage(volumeIconImage, 0, 0, iconSize, iconSize);
+                    const imageData = tempCtx.getImageData(0, 0, iconSize, iconSize);
+                    const data = imageData.data;
+                    const targetColor = isSelected ? {r: 0, g: 255, b: 0} : {r: 255, g: 204, b: 0};
+                    for (let i = 0; i < data.length; i += 4) {
+                        if (data[i + 3] > 0) {
+                            data[i] = targetColor.r;
+                            data[i + 1] = targetColor.g;
+                            data[i + 2] = targetColor.b;
+                        }
+                    }
+                    tempCtx.putImageData(imageData, 0, 0);
+                    soundIconCache[cacheKey] = cachedIcon;
+                }
+                ctx.drawImage(cachedIcon, x, y);
+                if (isSelected) {
+                    ctx.strokeStyle = "#00ff00";
+                    ctx.lineWidth = 2;
+                    ctx.strokeRect(x - 2, y - 2, iconSize + 4, iconSize + 4);
+                }
+                ctx.restore();
+            } else {
             ctx.fillStyle = isSelected ? "#00ff00" : "#ffcc00";
             ctx.font = "900 16px 'Font Awesome 6 Free'";
             ctx.textAlign = "center";
             ctx.textBaseline = "middle";
             ctx.fillText("\uf028", sound.xoffset, sound.yoffset);
+            }
         }
     }
 }
 
+function getTimelineBackgroundColor() {
+    const scheme = localStorage.getItem("ganiEditorColorScheme") || "default";
+    if (scheme === "default") return "#2b2b2b";
+    const schemes = {
+        "fusion-light": { panel: "#ffffff" },
+        "fusion-dark": { panel: "#2d2d2d" },
+        "dark-style": { panel: "#252525" },
+        "dark-orange": { panel: "#3a2f2a" },
+        "aqua": { panel: "#1a2a2f" },
+        "elegant-dark": { panel: "#2d2d2d" },
+        "material-dark": { panel: "#1e1e1e" },
+        "light-style": { panel: "#ffffff" },
+        "ayu-mirage": { panel: "#232834" },
+        "dracula": { panel: "#343746" }
+    };
+    return schemes[scheme]?.panel || "#2b2b2b";
+}
 function drawTimeline() {
     if (!timelineCanvas) {
         timelineCanvas = document.getElementById("timelineCanvas");
@@ -876,7 +1127,7 @@ function drawTimeline() {
         const height = timelineCanvas.height || timelineView.clientHeight || 116;
         timelineCanvas.width = width;
         timelineCanvas.height = height;
-        timelineCtx.fillStyle = "#353535";
+        timelineCtx.fillStyle = getTimelineBackgroundColor();
         timelineCtx.fillRect(0, 0, width, height);
         return;
     }
@@ -904,7 +1155,7 @@ function drawTimeline() {
     const width = timelineCanvas.width;
     const height = timelineCanvas.height;
     timelineCtx.clearRect(0, 0, width, height);
-    timelineCtx.fillStyle = "#353535";
+    timelineCtx.fillStyle = getTimelineBackgroundColor();
     timelineCtx.fillRect(0, 0, width, height);
     if (currentAnimation.frames.length === 0) return;
     const headerHeight = 20;
@@ -971,9 +1222,6 @@ function drawTimeline() {
         timelineCtx.quadraticCurveTo(x + 0.5, headerHeight + 0.5, x + 0.5 + rx, headerHeight + 0.5);
         timelineCtx.closePath();
         timelineCtx.fill();
-        //timelineCtx.strokeStyle = "#000000"; -- shit looks ugry
-        //timelineCtx.lineWidth = 1;
-        //timelineCtx.stroke();
         const clipX = x + 0.5 + 2;
         const clipY = headerHeight + 14;
         const clipW = frameWidth - 4;
@@ -1221,21 +1469,21 @@ function parseGani(text) {
             if (sprite) {
                 sprite.xscale = parseFloat(words[2]) || 1.0;
                 sprite.updateBoundingBox();
-                console.log(`Loaded STRETCHXEFFECT for sprite ${words[1]}: ${sprite.xscale}`);
+                if (DEBUG_MODE) console.log(`Loaded STRETCHXEFFECT for sprite ${words[1]}: ${sprite.xscale}`);
             }
         } else if (word1 === "STRETCHYEFFECT" && words.length >= 3) {
             const sprite = ani.getAniSprite(parseInt(words[1]), "");
             if (sprite) {
                 sprite.yscale = parseFloat(words[2]) || 1.0;
                 sprite.updateBoundingBox();
-                console.log(`Loaded STRETCHYEFFECT for sprite ${words[1]}: ${sprite.yscale}`);
+                if (DEBUG_MODE) console.log(`Loaded STRETCHYEFFECT for sprite ${words[1]}: ${sprite.yscale}`);
             }
         } else if (word1 === "ROTATEEFFECT" && words.length >= 3) {
             const sprite = ani.getAniSprite(parseInt(words[1]), "");
             if (sprite) {
                 sprite.rotation = parseFloat(words[2]) * 180 / Math.PI;
                 sprite.updateBoundingBox();
-                console.log(`Loaded ROTATEEFFECT for sprite ${words[1]}: ${sprite.rotation}`);
+                if (DEBUG_MODE) console.log(`Loaded ROTATEEFFECT for sprite ${words[1]}: ${sprite.rotation}`);
             }
         } else if ((word1 === "ATTACHSPRITE" || word1 === "ATTACHSPRITE2") && words.length >= 5) {
             const behind = word1 === "ATTACHSPRITE2";
@@ -1263,7 +1511,7 @@ function parseGani(text) {
             if (sprite) {
                 sprite.xscale = sprite.yscale = parseFloat(words[2]) || 1.0;
                 sprite.updateBoundingBox();
-                console.log(`Loaded ZOOMEFFECT for sprite ${words[1]}: ${sprite.xscale}`);
+                if (DEBUG_MODE) console.log(`Loaded ZOOMEFFECT for sprite ${words[1]}: ${sprite.xscale}`);
             }
         } else if (word1 === "LOOP") {
             ani.looped = true;
@@ -1502,20 +1750,20 @@ function saveGani(ani) {
         }
         if (sprite.xscale === sprite.yscale && sprite.xscale !== 1.0) {
             otherCommands.push(`ZOOMEFFECT ${String(sprite.index).padStart(4)} ${sprite.xscale}`);
-            console.log(`Saving ZOOMEFFECT for sprite ${sprite.index}: ${sprite.xscale}`);
+            if (DEBUG_MODE) console.log(`Saving ZOOMEFFECT for sprite ${sprite.index}: ${sprite.xscale}`);
         } else {
             if (sprite.xscale !== 1.0) {
                 otherCommands.push(`STRETCHXEFFECT ${String(sprite.index).padStart(4)} ${sprite.xscale}`);
-                console.log(`Saving STRETCHXEFFECT for sprite ${sprite.index}: ${sprite.xscale}`);
+                if (DEBUG_MODE) console.log(`Saving STRETCHXEFFECT for sprite ${sprite.index}: ${sprite.xscale}`);
             }
             if (sprite.yscale !== 1.0) {
                 otherCommands.push(`STRETCHYEFFECT ${String(sprite.index).padStart(4)} ${sprite.yscale}`);
-                console.log(`Saving STRETCHYEFFECT for sprite ${sprite.index}: ${sprite.yscale}`);
+                if (DEBUG_MODE) console.log(`Saving STRETCHYEFFECT for sprite ${sprite.index}: ${sprite.yscale}`);
             }
         }
         if (sprite.rotation !== 0.0) {
             otherCommands.push(`ROTATEEFFECT ${String(sprite.index).padStart(4)} ${sprite.rotation * Math.PI / 180}`);
-            console.log(`Saving ROTATEEFFECT for sprite ${sprite.index}: ${sprite.rotation}`);
+            if (DEBUG_MODE) console.log(`Saving ROTATEEFFECT for sprite ${sprite.index}: ${sprite.rotation}`);
         }
         if (sprite.colorEffectEnabled) {
             otherCommands.push(`COLOREFFECT ${String(sprite.index).padStart(4)} ${sprite.colorEffect.r/255} ${sprite.colorEffect.g/255} ${sprite.colorEffect.b/255} ${sprite.colorEffect.a/255}`);
@@ -1567,9 +1815,90 @@ function saveGani(ani) {
     return output;
 }
 
+
+async function loadImageFromUrl(url, key) {
+    return new Promise((resolve, reject) => {
+        const lowerUrl = url.toLowerCase();
+        if (lowerUrl.endsWith('.mng')) {
+            fetch(url)
+                .then(response => response.arrayBuffer())
+                .then(buffer => {
+                    try {
+                        const pngData = extractFirstFrame(buffer);
+                        const blob = new Blob([pngData], {type: 'image/png'});
+                        const objectUrl = URL.createObjectURL(blob);
+                        const img = new Image();
+                        img.onload = () => {
+                            if (key) imageLibrary.set(key, img);
+                            URL.revokeObjectURL(objectUrl);
+                            resolve(img);
+                        };
+                        img.onerror = () => {
+                            URL.revokeObjectURL(objectUrl);
+                            reject(new Error(`Failed to load extracted PNG frame from ${url}`));
+                        };
+                        img.src = objectUrl;
+                    } catch (err) {
+                        reject(new Error(`Failed to extract MNG frame from ${url}: ${err.message}`));
+                    }
+                })
+                .catch(reject);
+        } else {
+            const img = new Image();
+            img.onload = () => {
+                if (key) imageLibrary.set(key, img);
+                resolve(img);
+            };
+            img.onerror = () => reject(new Error(`Failed to load image from ${url}`));
+            img.src = url;
+        }
+    });
+}
+
 function loadImage(file) {
     return new Promise((resolve, reject) => {
+        const isMng = file.name.toLowerCase().endsWith('.mng');
+        if (isMng) {
         const reader = new FileReader();
+        reader.onload = (e) => {
+                try {
+                    const buffer = e.target.result;
+                    const data = new Uint8Array(buffer);
+                    const header = data.slice(0, 8);
+                    let isMngFile = true;
+                    for (let i = 0; i < 8; i++) {
+                        if (header[i] !== MNG_SIG[i]) {
+                            isMngFile = false;
+                            break;
+                        }
+                    }
+                    if (!isMngFile) {
+                        reject(new Error('Invalid MNG file'));
+                        return;
+                    }
+                    const pngData = extractFirstFrame(buffer);
+                    const blob = new Blob([pngData], {type: 'image/png'});
+                    const url = URL.createObjectURL(blob);
+                    const img = new Image();
+                    img.onload = () => {
+                        const key = file.name.toLowerCase();
+                        imageLibrary.set(key, img);
+                        URL.revokeObjectURL(url);
+                        resolve(img);
+                    };
+                    img.onerror = () => {
+                        URL.revokeObjectURL(url);
+                        reject(new Error('Failed to load extracted PNG frame'));
+                    };
+                    img.src = url;
+                } catch (err) {
+                    reject(err);
+                }
+            };
+            reader.onerror = reject;
+            reader.readAsArrayBuffer(file);
+        } else {
+            const reader = new FileReader();
         reader.onload = (e) => {
             const img = new Image();
             img.onload = () => {
@@ -1582,6 +1911,7 @@ function loadImage(file) {
         };
         reader.onerror = reject;
         reader.readAsDataURL(file);
+        }
     });
 }
 
@@ -1590,14 +1920,42 @@ function updateSpritesList() {
     list.innerHTML = "";
     if (!currentAnimation) return;
     const sortedSprites = Array.from(currentAnimation.sprites.values()).sort((a, b) => a.index - b.index);
-    if (!editingSprite && sortedSprites.length > 0) {
+    if (sortedSprites.length === 0) {
+        editingSprite = null;
+        updateSpriteEditor();
+        return;
+    }
+    let spriteFound = false;
+    if (editingSprite) {
+        for (const sprite of sortedSprites) {
+            if (sprite.index === editingSprite.index && sprite.type === editingSprite.type) {
+                editingSprite = sprite;
+                spriteFound = true;
+                break;
+            }
+        }
+    }
+    if (!editingSprite || !spriteFound) {
+        const savedSpriteIndex = localStorage.getItem("ganiEditorSelectedSprite_" + currentTabIndex);
+        if (savedSpriteIndex !== null) {
+            const savedIndex = parseInt(savedSpriteIndex);
+            for (const sprite of sortedSprites) {
+                if (sprite.index === savedIndex) {
+                    editingSprite = sprite;
+                    spriteFound = true;
+                    break;
+                }
+            }
+        }
+        if (!spriteFound) {
         editingSprite = sortedSprites[0];
+        }
         updateSpriteEditor();
     }
     for (const sprite of sortedSprites) {
         const item = document.createElement("div");
         item.className = "sprite-item";
-        if (editingSprite === sprite) item.classList.add("selected");
+        if (editingSprite && editingSprite.index === sprite.index && editingSprite.type === sprite.type) item.classList.add("selected");
         item.onclick = () => {
             selectSprite(sprite);
             insertPiece = new FramePieceSprite();
@@ -1751,6 +2109,9 @@ function updateSpritesList() {
 
 function selectSprite(sprite) {
     editingSprite = sprite;
+    if (currentTabIndex >= 0 && sprite) {
+        localStorage.setItem("ganiEditorSelectedSprite_" + currentTabIndex, sprite.index.toString());
+    }
     updateSpritesList();
     updateSpriteEditor();
     drawSpritePreview();
@@ -1945,6 +2306,7 @@ function updateItemSettings() {
             itemLayer.value = "0";
             itemLayer.disabled = true;
         }
+        updateSpinnerStates();
     } else {
         document.getElementById("itemSpriteID").value = piece.spriteIndex === SPRITE_INDEX_STRING ? piece.spriteName : String(piece.spriteIndex);
         if (itemX) {
@@ -1993,6 +2355,7 @@ function updateItemSettings() {
             itemLayer.disabled = false;
             itemLayer.max = pieces.length - 1;
         }
+        updateSpinnerStates();
     }
 }
 
@@ -2263,12 +2626,16 @@ function updateHistoryMenu() {
     const undoIndex = getCurrentUndoIndex();
     historyGroup.style.display = "block";
     historyList.innerHTML = "";
+    const currentFont = localStorage.getItem("editorFont") || "chevyray";
+    const fontFamily = getFontFamily(currentFont);
+    historyList.style.fontFamily = fontFamily;
     for (let i = undoStack.length - 1; i >= 0; i--) {
         const item = document.createElement("div");
         item.style.padding = "2px 4px";
         item.style.cursor = "pointer";
         item.style.opacity = i > undoIndex ? "0.5" : "1";
         item.style.backgroundColor = i === undoIndex ? "#4472C4" : "transparent";
+        item.style.fontFamily = fontFamily;
         let displayText = undoStack[i].description || `Action ${i + 1}`;
         if (currentAnimation) {
             displayText = displayText.replace(/Sprite (\d+)/g, (match, indexStr) => {
@@ -2360,14 +2727,14 @@ function updateHistoryMenu() {
     if (btnToolbarUndo) btnToolbarUndo.disabled = undoIndex < 0;
     if (btnToolbarRedo) btnToolbarRedo.disabled = undoIndex >= undoStack.length - 1;
 
-    const historyLoggingToggle = document.getElementById("toggleHistoryLogging");
+    const historyLoggingToggle = document.getElementById("historyLoggingToggle");
     if (historyLoggingToggle) {
         historyLoggingToggle.checked = getCurrentHistoryLoggingEnabled();
         historyLoggingToggle.onchange = () => {
             setCurrentHistoryLoggingEnabled(historyLoggingToggle.checked);
-            if (currentAnimation) {
-                const animationIndex = animations.indexOf(currentAnimation);
-                localStorage.setItem("ganiEditorHistoryLoggingEnabled_" + animationIndex, historyLoggingToggle.checked);
+            if (currentAnimation && currentTabIndex >= 0) {
+                localStorage.setItem("ganiEditorHistoryLoggingEnabled_" + currentTabIndex, historyLoggingToggle.checked);
+                currentAnimation.historyLoggingEnabled = historyLoggingToggle.checked;
             }
         };
     }
@@ -2376,16 +2743,23 @@ function updateHistoryMenu() {
 function addUndoCommand(command) {
     if (!getCurrentHistoryLoggingEnabled()) return;
     if (!currentAnimation) return;
+    if (command.oldState && lastSerializedState) {
+        const oldStr = JSON.stringify(command.oldState);
+        const lastStr = JSON.stringify(lastSerializedState);
+        if (oldStr === lastStr) return;
+    }
     const undoStack = getCurrentUndoStack();
     let undoIndex = getCurrentUndoIndex();
     undoStack.splice(undoIndex + 1);
     undoStack.push(command);
     if (undoStack.length > maxUndo) {
         undoStack.shift();
+        undoIndex = maxUndo - 1;
     } else {
         undoIndex++;
     }
     setCurrentUndoIndex(undoIndex);
+    if (command.newState) lastSerializedState = command.newState;
     updateHistoryMenu();
     saveUndoStack();
 }
@@ -2434,7 +2808,7 @@ function redo() {
 
 function serializeAnimationState() {
     if (!currentAnimation) return null;
-    return JSON.parse(JSON.stringify({
+    const state = {
         frames: currentAnimation.frames.map(f => ({
         pieces: f.pieces.map(dir => dir.map(p => {
             if (p.type === "sprite") {
@@ -2480,15 +2854,17 @@ function serializeAnimationState() {
             yscale: s.yscale,
             rotation: s.rotation,
             colorEffectEnabled: s.colorEffectEnabled,
-            colorEffect: s.colorEffect ? {...s.colorEffect} : {r: 255, g: 255, b: 255, a: 255},
+            colorEffect: s.colorEffect ? {r: s.colorEffect.r, g: s.colorEffect.g, b: s.colorEffect.b, a: s.colorEffect.a} : {r: 255, g: 255, b: 255, a: 255},
             attachedSprites: (s.attachedSprites || []).map(a => ({
                 index: a.index,
-                offset: a.offset ? {...a.offset} : {x: 0, y: 0}
+                offset: a.offset ? {x: a.offset.x, y: a.offset.y} : {x: 0, y: 0}
             })),
             m_drawIndex: s.m_drawIndex || 0
         })),
-        currentFrame: currentFrame
-    }));
+        currentFrame: currentFrame,
+        selectedPieceIds: Array.from(selectedPieces).map(p => p.id).filter(id => id)
+    };
+    return state;
 }
 
 function restoreAnimationState(state) {
@@ -2553,17 +2929,23 @@ function restoreAnimationState(state) {
         currentAnimation.sprites.set(sprite.index, sprite);
     });
     currentFrame = Math.min(state.currentFrame || 0, currentAnimation.frames.length - 1);
-    const selectedPieceIds = Array.from(selectedPieces).map(p => p.id).filter(id => id);
+    const selectedPieceIds = state.selectedPieceIds || [];
     selectedPieces.clear();
     if (selectedPieceIds.length > 0) {
         const frame = currentAnimation.getFrame(currentFrame);
         if (frame) {
             const actualDir = getDirIndex(currentDir);
             const pieces = frame.pieces[actualDir] || [];
+            const sounds = frame.sounds || [];
             for (const pieceId of selectedPieceIds) {
                 const piece = pieces.find(p => p.id === pieceId);
                 if (piece) {
                     selectedPieces.add(piece);
+                } else {
+                    const sound = sounds.find(s => s.id === pieceId);
+                    if (sound) {
+                        selectedPieces.add(sound);
+                    }
                 }
             }
         }
@@ -2693,9 +3075,26 @@ function initNewAnimation() {
     updateDefaultsTable();
 }
 
+function saveCurrentFrame() {
+    if (currentAnimation && currentTabIndex >= 0) {
+        localStorage.setItem("ganiEditorCurrentFrame_" + currentTabIndex, currentFrame.toString());
+    }
+}
+function restoreCurrentFrame() {
+    if (currentAnimation && currentTabIndex >= 0) {
+        const savedFrame = localStorage.getItem("ganiEditorCurrentFrame_" + currentTabIndex);
+        if (savedFrame !== null) {
+            const frameIndex = parseInt(savedFrame) || 0;
+            currentFrame = Math.min(Math.max(0, frameIndex), currentAnimation.frames.length - 1);
+        } else {
+            currentFrame = 0;
+        }
+    }
+}
 function switchTab(index) {
     if (index < 0 || index >= animations.length) return;
     saveUndoStack();
+    saveCurrentFrame();
     currentTabIndex = index;
     currentAnimation = animations[index];
     if (!currentAnimation.undoStack) currentAnimation.undoStack = [];
@@ -2703,14 +3102,26 @@ function switchTab(index) {
     if (currentAnimation.historyLoggingEnabled === undefined) {
         const savedValue = localStorage.getItem("ganiEditorHistoryLoggingEnabled_" + index);
         currentAnimation.historyLoggingEnabled = savedValue !== null ? savedValue === "true" : true;
+    } else {
+        const savedValue = localStorage.getItem("ganiEditorHistoryLoggingEnabled_" + index);
+        if (savedValue !== null) {
+            currentAnimation.historyLoggingEnabled = savedValue === "true";
+        }
     }
     restoreUndoStack();
     const historyLoggingToggle = document.getElementById("historyLoggingToggle");
     if (historyLoggingToggle) {
         historyLoggingToggle.checked = getCurrentHistoryLoggingEnabled();
+        historyLoggingToggle.onchange = () => {
+            setCurrentHistoryLoggingEnabled(historyLoggingToggle.checked);
+            if (currentAnimation && currentTabIndex >= 0) {
+                localStorage.setItem("ganiEditorHistoryLoggingEnabled_" + currentTabIndex, historyLoggingToggle.checked);
+                currentAnimation.historyLoggingEnabled = historyLoggingToggle.checked;
+            }
+        };
     }
     f12Log(`switchTab to index ${index}, animation defaults: ` + JSON.stringify(Array.from(currentAnimation.defaultImages.entries())));
-    currentFrame = 0;
+    restoreCurrentFrame();
     selectedPieces.clear();
     updateTabs();
     updateUIVisibility();
@@ -2792,7 +3203,40 @@ function addTab(ani, fileName = "") {
 }
 
 function closeTab(index) {
+    const tabToClose = animations[index];
+    if (tabToClose) {
+        tabToClose.undoStack = [];
+        tabToClose.undoIndex = -1;
+    }
+    localStorage.removeItem("ganiEditorSelectedSprite_" + index);
+    localStorage.removeItem("ganiEditorHistoryLoggingEnabled_" + index);
+    localStorage.removeItem("selectedSpriteIndex_" + index);
+    localStorage.removeItem("selectedSpriteType_" + index);
     animations.splice(index, 1);
+    for (let i = index; i < animations.length; i++) {
+        const oldIndex = i + 1;
+        const newIndex = i;
+        const spriteKey = localStorage.getItem("ganiEditorSelectedSprite_" + oldIndex);
+        const historyKey = localStorage.getItem("ganiEditorHistoryLoggingEnabled_" + oldIndex);
+        const spriteIndexKey = localStorage.getItem("selectedSpriteIndex_" + oldIndex);
+        const spriteTypeKey = localStorage.getItem("selectedSpriteType_" + oldIndex);
+        if (spriteKey !== null) {
+            localStorage.setItem("ganiEditorSelectedSprite_" + newIndex, spriteKey);
+            localStorage.removeItem("ganiEditorSelectedSprite_" + oldIndex);
+        }
+        if (historyKey !== null) {
+            localStorage.setItem("ganiEditorHistoryLoggingEnabled_" + newIndex, historyKey);
+            localStorage.removeItem("ganiEditorHistoryLoggingEnabled_" + oldIndex);
+        }
+        if (spriteIndexKey !== null) {
+            localStorage.setItem("selectedSpriteIndex_" + newIndex, spriteIndexKey);
+            localStorage.removeItem("selectedSpriteIndex_" + oldIndex);
+        }
+        if (spriteTypeKey !== null) {
+            localStorage.setItem("selectedSpriteType_" + newIndex, spriteTypeKey);
+            localStorage.removeItem("selectedSpriteType_" + oldIndex);
+        }
+    }
     if (animations.length === 0) {
         currentAnimation = null;
         currentTabIndex = -1;
@@ -2974,8 +3418,119 @@ function handleTabDrop(sourceIndex) {
     if (dragTabTargetIndex === animations.length) dragTabTargetIndex = animations.length - 1;
     const oldTabOrder = animations.slice();
     const tabToMove = animations[sourceIndex];
+    const sourceSpriteKey = localStorage.getItem("ganiEditorSelectedSprite_" + sourceIndex);
+    const sourceHistoryKey = localStorage.getItem("ganiEditorHistoryLoggingEnabled_" + sourceIndex);
+    const sourceSpriteIndexKey = localStorage.getItem("selectedSpriteIndex_" + sourceIndex);
+    const sourceSpriteTypeKey = localStorage.getItem("selectedSpriteType_" + sourceIndex);
     animations.splice(sourceIndex, 1);
     animations.splice(dragTabTargetIndex, 0, tabToMove);
+    if (sourceIndex < dragTabTargetIndex) {
+        for (let i = sourceIndex; i < dragTabTargetIndex; i++) {
+            const oldIndex = i + 1;
+            const newIndex = i;
+            const spriteKey = localStorage.getItem("ganiEditorSelectedSprite_" + oldIndex);
+            const historyKey = localStorage.getItem("ganiEditorHistoryLoggingEnabled_" + oldIndex);
+            const spriteIndexKey = localStorage.getItem("selectedSpriteIndex_" + oldIndex);
+            const spriteTypeKey = localStorage.getItem("selectedSpriteType_" + oldIndex);
+            if (spriteKey !== null) {
+                localStorage.setItem("ganiEditorSelectedSprite_" + newIndex, spriteKey);
+                localStorage.removeItem("ganiEditorSelectedSprite_" + oldIndex);
+            } else {
+                localStorage.removeItem("ganiEditorSelectedSprite_" + newIndex);
+            }
+            if (historyKey !== null) {
+                localStorage.setItem("ganiEditorHistoryLoggingEnabled_" + newIndex, historyKey);
+                localStorage.removeItem("ganiEditorHistoryLoggingEnabled_" + oldIndex);
+            } else {
+                localStorage.removeItem("ganiEditorHistoryLoggingEnabled_" + newIndex);
+            }
+            if (spriteIndexKey !== null) {
+                localStorage.setItem("selectedSpriteIndex_" + newIndex, spriteIndexKey);
+                localStorage.removeItem("selectedSpriteIndex_" + oldIndex);
+            } else {
+                localStorage.removeItem("selectedSpriteIndex_" + newIndex);
+            }
+            if (spriteTypeKey !== null) {
+                localStorage.setItem("selectedSpriteType_" + newIndex, spriteTypeKey);
+                localStorage.removeItem("selectedSpriteType_" + oldIndex);
+            } else {
+                localStorage.removeItem("selectedSpriteType_" + newIndex);
+            }
+        }
+        if (sourceSpriteKey !== null) {
+            localStorage.setItem("ganiEditorSelectedSprite_" + dragTabTargetIndex, sourceSpriteKey);
+        } else {
+            localStorage.removeItem("ganiEditorSelectedSprite_" + dragTabTargetIndex);
+        }
+        if (sourceHistoryKey !== null) {
+            localStorage.setItem("ganiEditorHistoryLoggingEnabled_" + dragTabTargetIndex, sourceHistoryKey);
+        } else {
+            localStorage.removeItem("ganiEditorHistoryLoggingEnabled_" + dragTabTargetIndex);
+        }
+        if (sourceSpriteIndexKey !== null) {
+            localStorage.setItem("selectedSpriteIndex_" + dragTabTargetIndex, sourceSpriteIndexKey);
+        } else {
+            localStorage.removeItem("selectedSpriteIndex_" + dragTabTargetIndex);
+        }
+        if (sourceSpriteTypeKey !== null) {
+            localStorage.setItem("selectedSpriteType_" + dragTabTargetIndex, sourceSpriteTypeKey);
+        } else {
+            localStorage.removeItem("selectedSpriteType_" + dragTabTargetIndex);
+        }
+    } else if (sourceIndex > dragTabTargetIndex) {
+        for (let i = dragTabTargetIndex; i < sourceIndex; i++) {
+            const oldIndex = i;
+            const newIndex = i + 1;
+            const spriteKey = localStorage.getItem("ganiEditorSelectedSprite_" + oldIndex);
+            const historyKey = localStorage.getItem("ganiEditorHistoryLoggingEnabled_" + oldIndex);
+            const spriteIndexKey = localStorage.getItem("selectedSpriteIndex_" + oldIndex);
+            const spriteTypeKey = localStorage.getItem("selectedSpriteType_" + oldIndex);
+            if (spriteKey !== null) {
+                localStorage.setItem("ganiEditorSelectedSprite_" + newIndex, spriteKey);
+                localStorage.removeItem("ganiEditorSelectedSprite_" + oldIndex);
+            } else {
+                localStorage.removeItem("ganiEditorSelectedSprite_" + newIndex);
+            }
+            if (historyKey !== null) {
+                localStorage.setItem("ganiEditorHistoryLoggingEnabled_" + newIndex, historyKey);
+                localStorage.removeItem("ganiEditorHistoryLoggingEnabled_" + oldIndex);
+            } else {
+                localStorage.removeItem("ganiEditorHistoryLoggingEnabled_" + newIndex);
+            }
+            if (spriteIndexKey !== null) {
+                localStorage.setItem("selectedSpriteIndex_" + newIndex, spriteIndexKey);
+                localStorage.removeItem("selectedSpriteIndex_" + oldIndex);
+            } else {
+                localStorage.removeItem("selectedSpriteIndex_" + newIndex);
+            }
+            if (spriteTypeKey !== null) {
+                localStorage.setItem("selectedSpriteType_" + newIndex, spriteTypeKey);
+                localStorage.removeItem("selectedSpriteType_" + oldIndex);
+            } else {
+                localStorage.removeItem("selectedSpriteType_" + newIndex);
+            }
+        }
+        if (sourceSpriteKey !== null) {
+            localStorage.setItem("ganiEditorSelectedSprite_" + dragTabTargetIndex, sourceSpriteKey);
+        } else {
+            localStorage.removeItem("ganiEditorSelectedSprite_" + dragTabTargetIndex);
+        }
+        if (sourceHistoryKey !== null) {
+            localStorage.setItem("ganiEditorHistoryLoggingEnabled_" + dragTabTargetIndex, sourceHistoryKey);
+        } else {
+            localStorage.removeItem("ganiEditorHistoryLoggingEnabled_" + dragTabTargetIndex);
+        }
+        if (sourceSpriteIndexKey !== null) {
+            localStorage.setItem("selectedSpriteIndex_" + dragTabTargetIndex, sourceSpriteIndexKey);
+        } else {
+            localStorage.removeItem("selectedSpriteIndex_" + dragTabTargetIndex);
+        }
+        if (sourceSpriteTypeKey !== null) {
+            localStorage.setItem("selectedSpriteType_" + dragTabTargetIndex, sourceSpriteTypeKey);
+        } else {
+            localStorage.removeItem("selectedSpriteType_" + dragTabTargetIndex);
+        }
+    }
     const oldCurrentTabIndex = currentTabIndex;
     if (currentTabIndex === sourceIndex) {
         currentTabIndex = dragTabTargetIndex;
@@ -3135,20 +3690,27 @@ async function restoreSession() {
                 currentAnimation = animations[currentTabIndex];
             }
             for (let i = 0; i < animations.length; i++) {
-                if (animations[i].historyLoggingEnabled === undefined) {
                     const savedValue = localStorage.getItem("ganiEditorHistoryLoggingEnabled_" + i);
-                    animations[i].historyLoggingEnabled = savedValue !== null ? savedValue === "true" : true;
+                if (savedValue !== null) {
+                    animations[i].historyLoggingEnabled = savedValue === "true";
+                } else if (animations[i].historyLoggingEnabled === undefined) {
+                    animations[i].historyLoggingEnabled = true;
                 }
             }
-            if (currentAnimation && currentAnimation.historyLoggingEnabled === undefined) {
+            if (currentAnimation) {
                 const savedValue = localStorage.getItem("ganiEditorHistoryLoggingEnabled_" + currentTabIndex);
-                currentAnimation.historyLoggingEnabled = savedValue !== null ? savedValue === "true" : true;
+                if (savedValue !== null) {
+                    currentAnimation.historyLoggingEnabled = savedValue === "true";
+                } else if (currentAnimation.historyLoggingEnabled === undefined) {
+                    currentAnimation.historyLoggingEnabled = true;
+                }
             }
             updateTabs();
             updateUIVisibility();
             updateSpritesList();
             updateDefaultsTable();
             updateSoundsList();
+            restoreCurrentFrame();
             drawTimeline();
             updateFrameInfo();
             restoreUndoStack();
@@ -3167,6 +3729,7 @@ async function restoreSession() {
     }
 }
 window.addEventListener("beforeunload", () => {
+    saveCurrentFrame();
     saveSession(true);
 });
 setInterval(() => {
@@ -3174,11 +3737,40 @@ setInterval(() => {
         saveSession(true);
     }
 }, 10000);
-window.addEventListener("load", async () => {
-    const loadingDiv = document.createElement("div");
-    loadingDiv.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);color:#ffffff;font-family:'Tempus Sans ITC',sans-serif;text-shadow:1px 1px 1px rgba(0,0,255,1);font-weight:bold;font-size:20px;user-select:none;z-index:99999;";
-    loadingDiv.textContent = "Loading AniEditor...";
+function showLoadingMessage(message, showOverlay = true) {
+    let loadingOverlay = null;
+    let loadingDiv = null;
+    let loadingText = null;
+    loadingOverlay = document.createElement("div");
+    loadingOverlay.style.cssText = "position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:99998;";
+    document.body.appendChild(loadingOverlay);
+    loadingDiv = document.createElement("div");
+    loadingDiv.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);color:#ffffff;font-family:'chevyray',monospace;user-select:none;z-index:99999;display:flex;align-items:center;justify-content:center;gap:20px;";
+    loadingDiv.style.setProperty("font-size", "24px", "important");
+    const faviconImg = document.createElement("img");
+    faviconImg.src = "favicon.ico";
+    faviconImg.className = "loading-favicon";
+    faviconImg.style.cssText = "width:32px;height:32px;";
+    loadingDiv.appendChild(faviconImg);
+    loadingText = document.createElement("span");
+    loadingText.style.setProperty("font-size", "24px", "important");
+    loadingText.style.fontWeight = "bold";
+    loadingText.style.textShadow = "1px 1px 1px rgba(0,0,255,1)";
+    loadingText.textContent = message;
+    loadingDiv.appendChild(loadingText);
     document.body.appendChild(loadingDiv);
+    return {
+        update: (newMessage) => {
+            if (loadingText) loadingText.textContent = newMessage;
+        },
+        close: () => {
+            if (loadingOverlay && loadingOverlay.parentNode) document.body.removeChild(loadingOverlay);
+            if (loadingDiv && loadingDiv.parentNode) document.body.removeChild(loadingDiv);
+        }
+    };
+}
+window.addEventListener("load", async () => {
+    const loading = showLoadingMessage("Loading Gani Editor...");
     await new Promise(resolve => setTimeout(resolve, 0));
     resizeCanvas();
     window.addEventListener("resize", resizeCanvas);
@@ -3186,18 +3778,13 @@ window.addEventListener("load", async () => {
     for (const fileName of criticalImages) {
         if (!imageLibrary.has(fileName.toLowerCase())) {
             try {
-                const img = new Image();
-                await new Promise((resolve, reject) => {
-                    img.onload = resolve;
-                    img.onerror = () => reject(new Error(`Image ${fileName} not found`));
-                    img.src = `images/${fileName}`;
-                });
-                imageLibrary.set(fileName.toLowerCase(), img);
+                const img = await loadImageFromUrl(`images/${fileName}`, fileName.toLowerCase());
             } catch (e) {}
         }
     }
     await refreshLocalFileCache();
-    await loadLocalImages();
+    await loadLocalImages(loading);
+    loading.close();
     resizeCanvas();
     const restored = await restoreSession();
     if (!restored) {
@@ -3206,8 +3793,11 @@ window.addEventListener("load", async () => {
         updateUIVisibility();
     } else {
         updateUIVisibility();
+        restoreCurrentFrame();
     }
+    setupContextMenus();
     if (currentAnimation) {
+        restoreCurrentFrame();
         resizeCanvas();
         setTimeout(() => {
             resizeCanvas();
@@ -3216,10 +3806,70 @@ window.addEventListener("load", async () => {
             const timelineContainer = document.querySelector(".timeline-container");
             const timelineView = document.querySelector(".timeline-view");
             const canvas = document.getElementById("timelineCanvas");
+            let timelineVisible = localStorage.getItem("timelineVisible");
+            if (timelineVisible === null) {
+                timelineVisible = "true";
+                localStorage.setItem("timelineVisible", "true");
+            }
+            timelineVisible = timelineVisible !== "false";
+            const toolbar = document.querySelector(".toolbar");
+            let toolbarVisible = localStorage.getItem("toolbarVisible");
+            if (toolbarVisible === null) {
+                toolbarVisible = "true";
+                localStorage.setItem("toolbarVisible", "true");
+            }
+            toolbarVisible = toolbarVisible !== "false";
+            if (toolbar) {
+                if (toolbarVisible) {
+                    toolbar.style.display = "flex";
+                    toolbar.style.visibility = "visible";
+                    toolbar.style.opacity = "1";
+                } else {
+                    toolbar.style.setProperty("display", "none", "important");
+                    toolbar.style.setProperty("visibility", "hidden", "important");
+                    toolbar.style.setProperty("opacity", "0", "important");
+                }
+            }
+            const leftPanel = document.querySelector(".left-panel");
+            const rightPanel = document.querySelector(".right-panel");
+            let leftPanelVisible = localStorage.getItem("leftPanelVisible");
+            if (leftPanelVisible === null) {
+                leftPanelVisible = "true";
+                localStorage.setItem("leftPanelVisible", "true");
+            }
+            leftPanelVisible = leftPanelVisible !== "false";
+            let rightPanelVisible = localStorage.getItem("rightPanelVisible");
+            if (rightPanelVisible === null) {
+                rightPanelVisible = "true";
+                localStorage.setItem("rightPanelVisible", "true");
+            }
+            rightPanelVisible = rightPanelVisible !== "false";
+            if (leftPanel) {
+                if (leftPanelVisible) {
+                    leftPanel.style.display = "flex";
+                    leftPanel.style.visibility = "visible";
+                } else {
+                    leftPanel.style.display = "none";
+                    leftPanel.style.visibility = "hidden";
+                }
+            }
+            if (rightPanel) {
+                if (rightPanelVisible) {
+                    rightPanel.style.display = "flex";
+                    rightPanel.style.visibility = "visible";
+                } else {
+                    rightPanel.style.display = "none";
+                    rightPanel.style.visibility = "hidden";
+                }
+            }
+            const mainSplitter = document.getElementById("mainSplitter");
             if (timelineContainer) {
+                if (timelineVisible) {
                 timelineContainer.style.display = "flex";
                 timelineContainer.style.visibility = "visible";
                 timelineContainer.style.opacity = "1";
+                    timelineContainer.style.removeProperty("flex");
+                    timelineContainer.style.removeProperty("height");
                 const isTouch = (navigator.maxTouchPoints && navigator.maxTouchPoints > 1) || (window.matchMedia && window.matchMedia("(pointer: coarse)").matches);
                 if (isTouch) {
                     timelineContainer.style.height = "250px";
@@ -3229,12 +3879,45 @@ window.addEventListener("load", async () => {
                     timelineContainer.style.height = "218px";
                     timelineContainer.style.flex = "0 0 218px";
                     timelineContainer.style.minHeight = "180px";
+                    }
+                    if (mainSplitter) {
+                        mainSplitter.style.height = "calc(100% - 222px)";
+                        mainSplitter.style.maxHeight = "calc(100% - 222px)";
+                    }
+                } else {
+                    timelineContainer.style.setProperty("display", "none", "important");
+                    timelineContainer.style.setProperty("visibility", "hidden", "important");
+                    timelineContainer.style.setProperty("opacity", "0", "important");
+                    timelineContainer.style.setProperty("flex", "0 0 0px", "important");
+                    timelineContainer.style.setProperty("height", "0px", "important");
+                    if (mainSplitter) {
+                        mainSplitter.style.height = "calc(100% - 0px)";
+                        mainSplitter.style.maxHeight = "calc(100% - 0px)";
+                    }
                 }
             }
             if (timelineView) {
+                if (timelineVisible) {
                 timelineView.style.display = "block";
                 timelineView.style.visibility = "visible";
                 timelineView.style.opacity = "1";
+                } else {
+                    timelineView.style.display = "none";
+                    timelineView.style.visibility = "hidden";
+                    timelineView.style.opacity = "0";
+                }
+            }
+            const canvasTimelineSplitter = document.getElementById("canvasTimelineSplitter");
+            if (canvasTimelineSplitter) {
+                if (timelineVisible) {
+                    canvasTimelineSplitter.style.display = "block";
+                    canvasTimelineSplitter.style.visibility = "visible";
+                    canvasTimelineSplitter.style.opacity = "1";
+                } else {
+                    canvasTimelineSplitter.style.display = "none";
+                    canvasTimelineSplitter.style.visibility = "hidden";
+                    canvasTimelineSplitter.style.opacity = "0";
+                }
             }
             setTimeout(() => {
                 const isTouch = (navigator.maxTouchPoints && navigator.maxTouchPoints > 1) || (window.matchMedia && window.matchMedia("(pointer: coarse)").matches);
@@ -3255,7 +3938,6 @@ window.addEventListener("load", async () => {
         }, 200);
     }
     if (DEBUG_MODE) console.log("Background image loading complete");
-    document.body.removeChild(loadingDiv);
     const spriteList = document.getElementById("spritesList");
     const spriteEditPanel = document.getElementById("spriteEditPanel");
     const spriteSplitterHandle = document.getElementById("spriteSplitterHandle");
@@ -3681,7 +4363,8 @@ window.addEventListener("load", async () => {
                     types: [{
                         description: "GANI Animation Files",
                         accept: { "text/plain": [".gani"] }
-                    }]
+                    }],
+                    excludeAcceptAllOption: false
                 });
                 const writable = await fileHandle.createWritable();
                 await writable.write(saveGani(currentAnimation));
@@ -3702,10 +4385,13 @@ window.addEventListener("load", async () => {
             const a = document.createElement("a");
             a.href = url;
             a.download = defaultName;
+            a.style.display = "none";
             document.body.appendChild(a);
             a.click();
+            setTimeout(() => {
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
+            }, 100);
             currentAnimation.fileName = defaultName;
             currentAnimation.modified = false;
             saveSession();
@@ -3739,7 +4425,7 @@ window.addEventListener("load", async () => {
         });
     };
     document.getElementById("btnReset").onclick = () => {
-        showConfirmDialog("Reset the editor to default state? This will reset zoom, pan, selections, and UI layout.", (confirmed) => {
+        showConfirmDialog("Reset the editor to default state? This will reset zoom, pan, selections, UI layout, and all settings.", (confirmed) => {
             if (confirmed) {
                 zoomLevel = 3;
                 panX = 0;
@@ -3752,9 +4438,12 @@ window.addEventListener("load", async () => {
                 if (leftPanel) leftPanel.style.width = "300px";
                 if (rightPanel) rightPanel.style.width = "250px";
                 if (timelineContainer) {
+                    const timelineVisible = localStorage.getItem("timelineVisible") !== "false";
+                    if (timelineVisible) {
                     const isTouch = (navigator.maxTouchPoints && navigator.maxTouchPoints > 1) || (window.matchMedia && window.matchMedia("(pointer: coarse)").matches);
                     timelineContainer.style.height = isTouch ? "240px" : "218px";
                     timelineContainer.style.flex = isTouch ? "0 0 240px" : "0 0 218px";
+                    }
                 }
                 if (spriteList) spriteList.style.height = "300px";
                 selectedPieces.clear();
@@ -3764,16 +4453,15 @@ window.addEventListener("load", async () => {
                 undoStack = [];
                 undoIndex = -1;
                 localStorage.setItem("mainCanvasZoom", zoomLevel);
-                updateTabs();
-                updateItemsCombo();
-                updateItemSettings();
-                updateSoundsList();
-                redraw();
-                updateUIVisibility();
-                updateFrameInfo();
-                updateSpritesList();
-                updateDefaultsTable();
-                saveSession();
+                localStorage.setItem("editorFont", "chevyray");
+                localStorage.setItem("editorFontSize", "12");
+                localStorage.setItem("editorFontStyle", "normal");
+                localStorage.setItem("editorUIScale", "1");
+                localStorage.setItem("editorPixelRendering", "true");
+                localStorage.setItem("editorAutoSave", "true");
+                localStorage.setItem("editorShowGrid", "true");
+                localStorage.setItem("ganiEditorColorScheme", "default");
+                location.reload();
             }
         });
     };
@@ -3939,6 +4627,7 @@ window.addEventListener("load", async () => {
         currentAnimation.frames[sourcePos] = targetFrame;
         currentAnimation.frames[targetPos] = frameToMove;
         currentFrame = targetPos;
+        saveCurrentFrame();
         const newState = serializeAnimationState();
         addUndoCommand({
             description: `Swap Frame ${sourcePos} with ${targetPos}`,
@@ -3954,6 +4643,11 @@ window.addEventListener("load", async () => {
     };
     document.getElementById("btnAddSprite").onclick = () => {
         showAddSpriteDialog();
+    };
+    document.getElementById("btnEditSprite").onclick = () => {
+        if (editingSprite) {
+            editSprite(editingSprite);
+        }
     };
     document.getElementById("spriteSource").onchange = (e) => {
         if (editingSprite) {
@@ -4151,6 +4845,7 @@ window.addEventListener("load", async () => {
         const frame = new Frame();
         currentAnimation.frames.splice(currentFrame + 1, 0, frame);
         currentFrame++;
+        saveCurrentFrame();
         const newState = serializeAnimationState();
         addUndoCommand({
             description: "Add Frame",
@@ -4203,6 +4898,7 @@ window.addEventListener("load", async () => {
         if (clipboardFrame) {
             currentAnimation.frames.splice(currentFrame + 1, 0, clipboardFrame.duplicate());
             currentFrame++;
+            saveCurrentFrame();
             redraw();
             updateFrameInfo();
             saveSession();
@@ -4217,7 +4913,9 @@ window.addEventListener("load", async () => {
         }
     };
     document.getElementById("timelineSlider").oninput = (e) => {
+        saveCurrentFrame();
         currentFrame = parseInt(e.target.value) || 0;
+        saveCurrentFrame();
         selectedPieces.clear();
         redraw();
         updateFrameInfo();
@@ -4409,6 +5107,7 @@ window.addEventListener("load", async () => {
                     isDraggingFrame = false;
                     if (currentFrame !== i) {
                         currentFrame = i;
+                        saveCurrentFrame();
                         selectedPieces.clear();
                         redraw();
                         updateFrameInfo();
@@ -4489,6 +5188,7 @@ window.addEventListener("load", async () => {
                 isDraggingFrame = false;
                 if (currentFrame !== i) {
                     currentFrame = i;
+                    saveCurrentFrame();
                     selectedPieces.clear();
                     redraw();
                     updateFrameInfo();
@@ -4657,6 +5357,7 @@ window.addEventListener("load", async () => {
                 currentAnimation.frames.splice(targetIndex > dragFrame ? targetIndex - 1 : targetIndex, 0, frameToMove);
                 currentFrame = targetIndex > dragFrame ? targetIndex - 1 : targetIndex;
 
+                if (getCurrentHistoryLoggingEnabled()) {
                 const newState = serializeAnimationState();
                 addUndoCommand({
                     description: "Reorder Frame",
@@ -4665,6 +5366,7 @@ window.addEventListener("load", async () => {
                     undo: () => restoreAnimationState(oldState),
                     redo: () => restoreAnimationState(newState)
                 });
+                }
 
                 redraw();
                 updateFrameInfo();
@@ -4724,6 +5426,7 @@ window.addEventListener("load", async () => {
                 currentAnimation.frames.splice(targetIndex > dragFrame ? targetIndex - 1 : targetIndex, 0, frameToMove);
                 currentFrame = targetIndex > dragFrame ? targetIndex - 1 : targetIndex;
 
+                if (getCurrentHistoryLoggingEnabled()) {
                 const newState = serializeAnimationState();
                 addUndoCommand({
                     description: "Reorder Frame",
@@ -4732,6 +5435,7 @@ window.addEventListener("load", async () => {
                     undo: () => restoreAnimationState(oldState),
                     redo: () => restoreAnimationState(newState)
                 });
+                }
 
                 redraw();
                 updateFrameInfo();
@@ -4776,7 +5480,25 @@ window.addEventListener("load", async () => {
             }
         } else if (e.ctrlKey && e.key === "r") {
             e.preventDefault();
-            if (currentAnimation && currentAnimation.fullPath) {
+            const settingsReset = document.getElementById("settingsReset");
+            if (settingsReset && settingsReset.onclick) {
+                settingsReset.onclick({ stopPropagation: () => {} });
+            }
+        } else if (e.ctrlKey && e.key === "o") {
+            e.preventDefault();
+            const btnOpen = document.getElementById("btnOpen");
+            if (btnOpen && btnOpen.onclick) {
+                btnOpen.onclick();
+            }
+        } else if (e.key === "F1") {
+            e.preventDefault();
+            const hotkeysDialog = document.getElementById("hotkeysDialog");
+            if (hotkeysDialog) {
+                updateHotkeysDialog();
+                hotkeysDialog.style.display = "flex";
+            }
+        } else if (e.ctrlKey && e.shiftKey && e.key === "R" && currentAnimation && currentAnimation.fullPath) {
+            e.preventDefault();
                 const fileInput = document.createElement("input");
                 fileInput.type = "file";
                 fileInput.accept = ".gani";
@@ -4804,11 +5526,11 @@ window.addEventListener("load", async () => {
                     saveSession();
                 };
                 fileInput.click();
-            } else if (currentAnimation && currentAnimation.fileName) {
+        } else if (e.ctrlKey && e.shiftKey && e.key === "R" && currentAnimation && currentAnimation.fileName) {
+            e.preventDefault();
                 const fileInput = document.getElementById("fileInput");
                 if (fileInput) {
                     fileInput.click();
-                }
             }
         } else if (e.key === "Escape" || e.key === "Esc") {
             e.preventDefault();
@@ -5086,7 +5808,7 @@ window.addEventListener("load", async () => {
                 promises.push(promise);
             }
             await Promise.all(promises);
-            console.log(`Imported ${loadedCount} sound files`);
+            if (DEBUG_MODE) console.log(`Imported ${loadedCount} sound files`);
         };
         input.click();
     };
@@ -5113,23 +5835,37 @@ window.addEventListener("load", async () => {
                 localStorage.setItem("ganiEditorLastWorkingDir", lastWorkingDirectory);
             }
         }
+        const imageFiles = files.filter(f => f.type.startsWith("image/") || f.name.toLowerCase().endsWith('.mng'));
+        const totalFiles = imageFiles.length;
+        let loading = null;
+        if (totalFiles > 0) {
+            loading = showLoadingMessage("Loading workspace... 0%");
+        }
         let loadedCount = 0;
-        for (const file of files) {
-            if (file.type.startsWith("image/")) {
+        for (const file of imageFiles) {
                 try {
                     await loadImage(file);
                     loadedCount++;
+                if (loading) {
+                    const percent = Math.round((loadedCount / totalFiles) * 100);
+                    loading.update(`Loading workspace... ${percent}%`);
+                }
                 } catch (err) {
                     console.error(`Failed to load ${file.name}:`, err);
+                loadedCount++;
+                if (loading) {
+                    const percent = Math.round((loadedCount / totalFiles) * 100);
+                    loading.update(`Loading workspace... ${percent}%`);
                 }
             }
         }
-        console.log(`Loaded ${loadedCount} images from workspace`);
+        if (loading) loading.close();
+        if (DEBUG_MODE) console.log(`Loaded ${loadedCount} images from workspace`);
         refreshAllAnimationsSprites();
         drawSpritePreview();
-        redraw();
         updateSpritesList();
         saveSession();
+        redraw();
     };
     document.getElementById("btnImportSprites").onclick = () => {
         const input = document.createElement("input");
@@ -5316,25 +6052,1427 @@ window.addEventListener("load", async () => {
     bgColorInput.type = "color";
     bgColorInput.value = backgroundColor;
     bgColorInput.style.width = "60px";
-    bgColorInput.style.height = "24px";
-    bgColorInput.style.border = "1px solid #777";
+    bgColorInput.style.height = "35px";
+    bgColorInput.style.border = "1px solid #0a0a0a";
+    bgColorInput.style.borderTop = "1px solid #404040";
+    bgColorInput.style.borderLeft = "1px solid #404040";
     bgColorInput.style.cursor = "pointer";
     bgColorInput.style.flexShrink = "0";
     bgColorInput.style.padding = "0";
+    bgColorInput.style.boxShadow = "inset 0 1px 0 rgba(0, 0, 0, 0.3)";
     bgColorInput.onchange = (e) => {
         backgroundColor = e.target.value;
         redraw();
         saveSession();
     };
-    document.getElementById("btnBgColor").parentNode.insertBefore(bgColorInput, document.getElementById("btnBgColor").nextSibling);
-    document.getElementById("btnBgColor").onclick = () => {
-        bgColorInput.click();
+    function applyColorScheme(scheme) {
+        if (scheme === "default") {
+            const oldStyle = document.getElementById("colorSchemeStyle");
+            if (oldStyle) oldStyle.remove();
+            document.body.style.background = "";
+            document.body.style.color = "";
+            const settingsDialog = document.getElementById("settingsDialog");
+            const aboutDialog = document.getElementById("aboutDialog");
+            if (settingsDialog) {
+                const settingsContent = settingsDialog.querySelector(".dialog-content");
+                if (settingsContent) {
+                    settingsContent.style.background = "#2b2b2b";
+                    settingsContent.style.borderColor = "#1a1a1a";
+                    settingsContent.style.color = "";
+                    const h3 = settingsContent.querySelector("h3");
+                    if (h3) {
+                        h3.style.color = "";
+                        h3.style.borderColor = "";
+                    }
+                    const labels = settingsContent.querySelectorAll("label");
+                    labels.forEach(label => label.style.color = "");
+                    const buttons = settingsContent.querySelectorAll("button");
+                    buttons.forEach(btn => {
+                        btn.style.background = "#1a1a1a";
+                        btn.style.color = "#ffffff";
+                        btn.style.borderColor = "#0a0a0a";
+                    });
+                    const selects = settingsContent.querySelectorAll("select");
+                    selects.forEach(sel => {
+                        sel.style.background = "";
+                        sel.style.color = "";
+                        sel.style.borderColor = "";
+                    });
+                    const inputs = settingsContent.querySelectorAll("input");
+                    inputs.forEach(inp => {
+                        if (inp.type !== "checkbox" && inp.type !== "range") {
+                            inp.style.background = "";
+                            inp.style.color = "";
+                            inp.style.borderColor = "";
+                        }
+                    });
+                }
+            }
+            if (aboutDialog) {
+                const aboutContent = aboutDialog.querySelector(".dialog-content");
+                if (aboutContent) {
+                    aboutContent.style.background = "#2b2b2b";
+                    aboutContent.style.borderColor = "#1a1a1a";
+                    aboutContent.style.color = "";
+                    const h3 = aboutContent.querySelector("h3");
+                    if (h3) {
+                        h3.style.color = "";
+                        h3.style.borderColor = "";
+                    }
+                    const paragraphs = aboutContent.querySelectorAll("p");
+                    paragraphs.forEach(p => {
+                        p.style.color = "";
+                        p.style.borderColor = "";
+                    });
+                    const spans = aboutContent.querySelectorAll("span");
+                    spans.forEach(span => span.style.color = "");
+                    const divs = aboutContent.querySelectorAll("div");
+                    divs.forEach(div => {
+                        if (div.style.color && div.style.color !== "transparent") div.style.color = "";
+                        if (div.style.borderColor) div.style.borderColor = "";
+                    });
+                    const links = aboutContent.querySelectorAll("a");
+                    links.forEach(a => a.style.color = "#4a9eff");
+                    const buttons = aboutContent.querySelectorAll("button");
+                    buttons.forEach(btn => {
+                        btn.style.background = "#1a1a1a";
+                        btn.style.color = "#ffffff";
+                        btn.style.borderColor = "#0a0a0a";
+                    });
+                }
+            }
+            const colorSchemeDropdown = document.getElementById("colorSchemeDropdown");
+            if (colorSchemeDropdown) {
+                colorSchemeDropdown.style.background = "#2b2b2b";
+                colorSchemeDropdown.style.borderColor = "#0a0a0a";
+                const schemeItems = colorSchemeDropdown.querySelectorAll(".color-scheme-item");
+                schemeItems.forEach(item => {
+                    item.style.color = "#e0e0e0";
+                    item.style.borderColor = "#0a0a0a";
+                });
+            }
+            const timelineCanvas = document.getElementById("timelineCanvas");
+            if (timelineCanvas) {
+                timelineCanvas.style.background = "";
+            }
+            localStorage.setItem("ganiEditorColorScheme", scheme);
+            return;
+        }
+        const schemes = {
+            "fusion-light": {
+                bg: "#f5f5f5",
+                panel: "#ffffff",
+                border: "#d0d0d0",
+                text: "#1a1a1a",
+                hover: "#e8e8e8",
+                button: "#ffffff",
+                buttonText: "#1a1a1a",
+                buttonHover: "#f0f0f0",
+                tabActive: "#ffffff",
+                inputBg: "#ffffff"
+            },
+            "fusion-dark": {
+                bg: "#1e1e1e",
+                panel: "#2d2d2d",
+                border: "#0f0f0f",
+                text: "#e8e8e8",
+                hover: "#3d3d3d"
+            },
+            "dark-style": {
+                bg: "#1e1e1e",
+                panel: "#252525",
+                border: "#3c3c3c",
+                text: "#cccccc",
+                hover: "#3e3e3e"
+            },
+            "dark-orange": {
+                bg: "#2a1f1a",
+                panel: "#3a2f2a",
+                border: "#1a0f0a",
+                text: "#ffaa55",
+                hover: "#4a3f3a"
+            },
+            "aqua": {
+                bg: "#0a1a1f",
+                panel: "#1a2a2f",
+                border: "#0a0a0a",
+                text: "#55ffff",
+                hover: "#2a3a3f"
+            },
+            "elegant-dark": {
+                bg: "#1a1a1a",
+                panel: "#2d2d2d",
+                border: "#404040",
+                text: "#e8e8e8",
+                hover: "#3d3d3d"
+            },
+            "material-dark": {
+                bg: "#121212",
+                panel: "#1e1e1e",
+                border: "#333333",
+                text: "#ffffff",
+                hover: "#2e2e2e"
+            },
+            "light-style": {
+                bg: "#ffffff",
+                panel: "#ffffff",
+                border: "#e0e0e0",
+                text: "#000000",
+                hover: "#f5f5f5",
+                button: "#ffffff",
+                buttonText: "#000000",
+                buttonHover: "#f0f0f0",
+                tabActive: "#ffffff",
+                inputBg: "#ffffff"
+            },
+            "ayu-mirage": {
+                bg: "#1f2430",
+                panel: "#232834",
+                border: "#191e2a",
+                text: "#cbccc6",
+                hover: "#2a2f3a"
+            },
+            "dracula": {
+                bg: "#282a36",
+                panel: "#343746",
+                border: "#21222c",
+                text: "#f8f8f2",
+                hover: "#44475a"
+            }
+        };
+        const colors = schemes[scheme];
+        if (!colors) return;
+        document.body.style.background = colors.bg;
+        document.body.style.color = colors.text;
+        const style = document.createElement("style");
+        style.id = "colorSchemeStyle";
+        const oldStyle = document.getElementById("colorSchemeStyle");
+        if (oldStyle) oldStyle.remove();
+        const buttonBg = colors.button || colors.panel;
+        const buttonText = colors.buttonText || colors.text;
+        const buttonHover = colors.buttonHover || colors.hover;
+        const tabActive = colors.tabActive || colors.panel;
+        const inputBg = colors.inputBg || colors.bg;
+        style.textContent = `
+            .toolbar, .sprite-toolbar, .playback-controls { background: ${colors.panel} !important; }
+            .left-panel, .right-panel, .sprite-edit-panel, .timeline-container, .settings-group { background: ${colors.panel} !important; }
+            .sprite-item, .sprite-preview, .timeline-view { background: ${colors.panel} !important; }
+            .timeline-header { background: ${colors.panel} !important; }
+            #timelineCanvas { background: ${colors.panel} !important; }
+            .timeline-header label, .timeline-header span { color: ${colors.text} !important; }
+            .timeline-slider { background: ${inputBg} !important; border-color: ${colors.border} !important; }
+            .timeline-slider::-webkit-slider-thumb { background: ${buttonBg} !important; border-color: ${colors.border} !important; }
+            .timeline-slider::-moz-range-thumb { background: ${buttonBg} !important; border-color: ${colors.border} !important; }
+            input[type="range"] { background: transparent !important; border: none !important; }
+            input[type="range"]::-webkit-slider-thumb { background: ${buttonBg} !important; border-color: ${colors.border} !important; }
+            input[type="range"]::-moz-range-thumb { background: ${buttonBg} !important; border-color: ${colors.border} !important; }
+            input[type="range"]::-webkit-slider-runnable-track { background: transparent !important; border: none !important; }
+            input[type="range"]::-moz-range-track { background: transparent !important; border: none !important; }
+            .slider-group { border: none !important; border-top: none !important; box-shadow: none !important; background: transparent !important; margin-top: 0 !important; padding-top: 0 !important; }
+            .slider-group input[type="range"] { background: transparent !important; border: none !important; }
+            .slider-group input[type="range"]::-webkit-slider-thumb { background: ${buttonBg} !important; border-color: ${colors.border} !important; }
+            .slider-group input[type="range"]::-moz-range-thumb { background: ${buttonBg} !important; border-color: ${colors.border} !important; }
+            .slider-group input[type="range"]::-webkit-slider-runnable-track { background: transparent !important; border: none !important; }
+            .slider-group input[type="range"]::-moz-range-track { background: transparent !important; border: none !important; }
+            #settingsUIScale { background: transparent !important; border: none !important; }
+            #settingsUIScale::-webkit-slider-thumb { background: ${buttonBg} !important; border-color: ${colors.border} !important; }
+            #settingsUIScale::-moz-range-thumb { background: ${buttonBg} !important; border-color: ${colors.border} !important; }
+            #settingsUIScale::-webkit-slider-runnable-track { background: transparent !important; border-color: ${colors.border} !important; }
+            #settingsUIScale::-moz-range-track { background: transparent !important; border-color: ${colors.border} !important; }
+            .toolbar button, .sprite-toolbar button, .playback-controls button, .item-controls button, .settings-group button, .canvas-controls button { background: ${buttonBg} !important; color: ${buttonText} !important; border-color: ${colors.border} !important; }
+            .toolbar button:hover, .sprite-toolbar button:hover, .playback-controls button:hover, .item-controls button:hover, .settings-group button:hover, .canvas-controls button:hover { background: ${buttonHover} !important; }
+            ${scheme === "fusion-light" || scheme === "light-style" ? `.fas { filter: brightness(0) !important; }` : scheme === "default" ? `.fas { filter: none !important; }` : scheme === "dark-orange" ? `.fas { filter: invert(1) brightness(1.8) sepia(1) saturate(3) hue-rotate(5deg) !important; }` : scheme === "aqua" ? `.fas { filter: invert(1) brightness(1.8) sepia(1) saturate(4) hue-rotate(150deg) !important; }` : `.fas { filter: invert(1) brightness(1.2) !important; }`}
+            .tab, .sprite-item, .settings-group, .direction-selector { border-color: ${colors.border} !important; }
+            .direction-selector { background: ${colors.panel} !important; }
+            .direction-selector label { color: ${colors.text} !important; }
+            .direction-selector select { background: ${inputBg} !important; color: ${colors.text} !important; border-color: ${colors.border} !important; }
+            .custom-dropdown-button { background: ${inputBg} !important; color: ${colors.text} !important; border-color: ${colors.border} !important; }
+            .custom-dropdown-button:hover { background: ${colors.hover} !important; border-color: ${colors.border} !important; }
+            .custom-dropdown-button:active { background: ${buttonHover} !important; border-color: ${colors.border} !important; }
+            .custom-dropdown { background: ${colors.panel} !important; border-color: ${colors.border} !important; }
+            .custom-dropdown-item { color: ${colors.text} !important; border-color: ${colors.border} !important; }
+            .custom-dropdown-item:hover { background: ${colors.hover} !important; }
+            .direction-selector .custom-dropdown-button { background: ${inputBg} !important; color: ${colors.text} !important; border-color: ${colors.border} !important; }
+            .direction-selector .custom-dropdown { background: ${colors.panel} !important; border-color: ${colors.border} !important; }
+            .direction-selector .custom-dropdown-item { color: ${colors.text} !important; border-color: ${colors.border} !important; }
+            .direction-selector .custom-dropdown-item:hover { background: ${colors.hover} !important; }
+            .sprite-item > div, label, h3, span { color: ${colors.text} !important; }
+            input, select, textarea { background: ${inputBg} !important; color: ${colors.text} !important; border-color: ${colors.border} !important; }
+            #colorSchemeDropdown { background: ${colors.panel} !important; border-color: ${colors.border} !important; }
+            .color-scheme-item { color: ${colors.text} !important; border-color: ${colors.border} !important; }
+            .color-scheme-item:hover { background: ${colors.hover} !important; }
+            .tabs { background: ${colors.panel} !important; }
+            .tab { background: transparent !important; color: ${colors.text} !important; opacity: 0.6; }
+            .tab:hover { background: ${colors.hover} !important; opacity: 0.8; }
+            .tab.active { background: ${tabActive} !important; color: ${colors.text} !important; border-color: ${colors.border} !important; border-bottom: none !important; opacity: 1; }
+            .splitter-handle { background: ${colors.border} !important; }
+            .defaults-table th { background: ${buttonBg} !important; color: ${buttonText} !important; }
+            .defaults-table td { background: ${colors.panel} !important; color: ${colors.text} !important; }
+            #historyList { background: ${colors.bg} !important; color: ${colors.text} !important; }
+            .sprite-item { background: ${colors.panel} !important; border-color: ${colors.border} !important; }
+            .sprite-item.selected { border-color: ${buttonBg} !important; }
+            .dialog-content { background: ${colors.panel} !important; border-color: ${colors.border} !important; color: ${colors.text} !important; }
+            .dialog-content h3 { color: ${colors.text} !important; border-color: ${colors.border} !important; }
+            .dialog-content label { color: ${colors.text} !important; }
+            .dialog-content p, .dialog-content span, .dialog-content div { color: ${colors.text} !important; }
+            .dialog-content a { color: ${scheme === "fusion-light" || scheme === "light-style" ? "#0066cc" : scheme === "default" ? "#4a9eff" : scheme === "dark-orange" ? "#ffaa55" : scheme === "aqua" ? "#55ffff" : scheme === "ayu-mirage" ? "#5ccfe6" : scheme === "dracula" ? "#bd93f9" : "#4a9eff"} !important; }
+            .dialog-content button { background: ${buttonBg} !important; color: ${buttonText} !important; border-color: ${colors.border} !important; }
+            .dialog-content button:hover { background: ${buttonHover} !important; }
+            .dialog-content select, .dialog-content input { background: ${inputBg} !important; color: ${colors.text} !important; border-color: ${colors.border} !important; }
+            .dialog-overlay > div[style*="background: #2b2b2b"] { background: ${colors.panel} !important; border-color: ${colors.border} !important; color: ${colors.text} !important; }
+            .dialog-overlay > div[style*="background: #2b2b2b"] > div[style*="display: flex"] > div[style*="background: #2b2b2b"] { background: ${colors.panel} !important; color: ${colors.text} !important; }
+            .dialog-overlay > div[style*="background: #2b2b2b"] > div[style*="display: flex"] > div[style*="background: #2b2b2b"] label { color: ${colors.text} !important; }
+            .dialog-overlay > div[style*="background: #2b2b2b"] > div[style*="display: flex"] > div[style*="background: #2b2b2b"] input,
+            .dialog-overlay > div[style*="background: #2b2b2b"] > div[style*="display: flex"] > div[style*="background: #2b2b2b"] select { background: ${inputBg} !important; color: ${colors.text} !important; border-color: ${colors.border} !important; }
+            .dialog-overlay > div[style*="background: #2b2b2b"] > div[style*="display: flex"] > div[style*="background: #2b2b2b"] button { background: ${buttonBg} !important; color: ${buttonText} !important; border-color: ${colors.border} !important; }
+            .dialog-overlay > div[style*="background: #2b2b2b"] > div[style*="display: flex"] > div[style*="background: #2b2b2b"] button:hover { background: ${buttonHover} !important; }
+            .dialog-overlay > div[style*="background: #2b2b2b"] > div[style*="display: flex"] > div[style*="border: 1px solid #0a0a0a"] { border-color: ${colors.border} !important; background: ${colors.panel} !important; }
+            .dialog-overlay > div[style*="background: #2b2b2b"] > div[style*="display: flex"] > div[style*="background: #353535"] { background: ${colors.panel} !important; border-color: ${colors.border} !important; }
+            .dialog-overlay > div[style*="background: #2b2b2b"] > div[style*="display: flex"] > div[style*="background: #1a1a1a"] { background: ${inputBg} !important; border-color: ${colors.border} !important; }
+        `;
+        document.head.appendChild(style);
+        const settingsDialog = document.getElementById("settingsDialog");
+        const aboutDialog = document.getElementById("aboutDialog");
+        if (settingsDialog) {
+            const settingsContent = settingsDialog.querySelector(".dialog-content");
+            if (settingsContent) {
+                settingsContent.style.background = colors.panel;
+                settingsContent.style.borderColor = colors.border;
+                settingsContent.style.color = colors.text;
+                const h3 = settingsContent.querySelector("h3");
+                if (h3) {
+                    h3.style.color = colors.text;
+                    h3.style.borderColor = colors.border;
+                }
+                const labels = settingsContent.querySelectorAll("label");
+                labels.forEach(label => label.style.color = colors.text);
+                const buttons = settingsContent.querySelectorAll("button");
+                buttons.forEach(btn => {
+                    btn.style.background = buttonBg;
+                    btn.style.color = buttonText;
+                    btn.style.borderColor = colors.border;
+                });
+                const selects = settingsContent.querySelectorAll("select");
+                selects.forEach(sel => {
+                    sel.style.background = inputBg;
+                    sel.style.color = colors.text;
+                    sel.style.borderColor = colors.border;
+                });
+                const inputs = settingsContent.querySelectorAll("input");
+                inputs.forEach(inp => {
+                    if (inp.type !== "checkbox" && inp.type !== "range") {
+                        inp.style.background = inputBg;
+                        inp.style.color = colors.text;
+                        inp.style.borderColor = colors.border;
+                    }
+                });
+            }
+        }
+        if (aboutDialog) {
+            const aboutContent = aboutDialog.querySelector(".dialog-content");
+            if (aboutContent) {
+                aboutContent.style.background = colors.panel;
+                aboutContent.style.borderColor = colors.border;
+                aboutContent.style.color = colors.text;
+                const h3 = aboutContent.querySelector("h3");
+                if (h3) {
+                    h3.style.color = colors.text;
+                    h3.style.borderColor = colors.border;
+                }
+                const paragraphs = aboutContent.querySelectorAll("p");
+                paragraphs.forEach(p => {
+                    p.style.color = colors.text;
+                    p.style.borderColor = colors.border;
+                });
+                const spans = aboutContent.querySelectorAll("span");
+                spans.forEach(span => span.style.color = colors.text);
+                const divs = aboutContent.querySelectorAll("div");
+                divs.forEach(div => {
+                    if (div.style.color && div.style.color !== "transparent") div.style.color = colors.text;
+                    if (div.style.borderColor) div.style.borderColor = colors.border;
+                });
+                const links = aboutContent.querySelectorAll("a");
+                links.forEach(a => a.style.color = buttonBg);
+                const buttons = aboutContent.querySelectorAll("button");
+                buttons.forEach(btn => {
+                    btn.style.background = buttonBg;
+                    btn.style.color = buttonText;
+                    btn.style.borderColor = colors.border;
+                });
+            }
+        }
+        const colorSchemeDropdown = document.getElementById("colorSchemeDropdown");
+        if (colorSchemeDropdown) {
+            colorSchemeDropdown.style.background = colors.panel;
+            colorSchemeDropdown.style.borderColor = colors.border;
+            const schemeItems = colorSchemeDropdown.querySelectorAll(".color-scheme-item");
+            schemeItems.forEach(item => {
+                item.style.color = colors.text;
+                item.style.borderColor = colors.border;
+                const itemScheme = item.getAttribute("data-scheme");
+                if (itemScheme === scheme) {
+                    item.style.background = colors.hover || "#404040";
+                } else {
+                    item.style.background = "";
+                }
+            });
+        }
+        const timelineCanvas = document.getElementById("timelineCanvas");
+        if (timelineCanvas) {
+            timelineCanvas.style.background = colors.panel;
+        }
+        localStorage.setItem("ganiEditorColorScheme", scheme);
+    }
+    const btnColorScheme = document.getElementById("btnColorScheme");
+    const colorSchemeDropdown = document.getElementById("colorSchemeDropdown");
+    if (btnColorScheme && colorSchemeDropdown) {
+        const savedScheme = localStorage.getItem("ganiEditorColorScheme") || "default";
+        applyColorScheme(savedScheme);
+        const updateColorSchemeFont = () => {
+            const currentFont = localStorage.getItem("editorFont") || "chevyray";
+            const fontFamily = getFontFamily(currentFont);
+            const schemeItems = colorSchemeDropdown.querySelectorAll(".color-scheme-item");
+            schemeItems.forEach(item => {
+                item.style.fontFamily = fontFamily;
+            });
+        };
+        updateColorSchemeFont();
+        const schemeItems = colorSchemeDropdown.querySelectorAll(".color-scheme-item");
+        btnColorScheme.onclick = (e) => {
+            e.stopPropagation();
+            updateColorSchemeFont();
+            colorSchemeDropdown.style.display = colorSchemeDropdown.style.display === "none" ? "block" : "none";
+        };
+        schemeItems.forEach(item => {
+            item.onclick = (e) => {
+                e.stopPropagation();
+                const scheme = item.getAttribute("data-scheme");
+                applyColorScheme(scheme);
+                const schemes = {
+                    "fusion-light": { hover: "#e8e8e8" },
+                    "fusion-dark": { hover: "#3d3d3d" },
+                    "dark-style": { hover: "#3e3e3e" },
+                    "dark-orange": { hover: "#4a3f3a" },
+                    "aqua": { hover: "#2a3a3f" },
+                    "elegant-dark": { hover: "#3d3d3d" },
+                    "material-dark": { hover: "#2e2e2e" },
+                    "light-style": { hover: "#f5f5f5" },
+                    "ayu-mirage": { hover: "#2a2f3a" },
+                    "dracula": { hover: "#44475a" }
+                };
+                const schemeColors = schemes[scheme];
+                schemeItems.forEach(i => {
+                    i.style.background = "";
+                    if (i.getAttribute("data-scheme") === scheme) {
+                        i.style.background = schemeColors ? schemeColors.hover : "#404040";
+                    }
+                });
+                colorSchemeDropdown.style.display = "none";
+            };
+        });
+        document.addEventListener("click", (e) => {
+            if (!btnColorScheme.contains(e.target) && !colorSchemeDropdown.contains(e.target)) {
+                colorSchemeDropdown.style.display = "none";
+            }
+        });
+    }
+    function createCustomDropdown(selectElement) {
+        if (!selectElement || selectElement.dataset.customDropdown) return;
+        selectElement.dataset.customDropdown = "true";
+        selectElement.style.display = "none";
+        const wrapper = document.createElement("div");
+        wrapper.style.position = "relative";
+        wrapper.style.width = "100%";
+        selectElement.parentNode.insertBefore(wrapper, selectElement);
+        wrapper.appendChild(selectElement);
+        const button = document.createElement("button");
+        button.className = "custom-dropdown-button";
+        const currentFont = localStorage.getItem("editorFont") || "chevyray";
+        let currentFontFamily = currentFont;
+        currentFontFamily = getFontFamily(currentFont);
+        let buttonFontFamily = currentFontFamily;
+        let buttonFontStyle = "normal";
+        let buttonFontWeight = "normal";
+        if (selectElement.id === "settingsFont") {
+            const selectedValue = selectElement.options[selectElement.selectedIndex]?.value || selectElement.options[0]?.value || "";
+            if (selectedValue === "PressStart2P") buttonFontFamily = '"PressStart2P", monospace';
+            else if (selectedValue === "Silkscreen") buttonFontFamily = '"Silkscreen", monospace';
+            else if (selectedValue === "Tempus Sans ITC") buttonFontFamily = '"Tempus Sans ITC", monospace';
+            else if (selectedValue === "MesloLGS NF") buttonFontFamily = '"MesloLGS NF", monospace';
+            else if (selectedValue === "chevyray") buttonFontFamily = '"chevyray", monospace';
+            else if (selectedValue === "chevyrayOeuf") buttonFontFamily = '"chevyrayOeuf", monospace';
+            else if (selectedValue === "monospace") buttonFontFamily = "monospace";
+            else buttonFontFamily = selectedValue;
+        } else if (selectElement.id === "settingsFontStyle") {
+            const selectedValue = selectElement.options[selectElement.selectedIndex]?.value || selectElement.options[0]?.value || "";
+            if (selectedValue === "italic") buttonFontStyle = "italic";
+            else if (selectedValue === "bold") buttonFontWeight = "bold";
+            else if (selectedValue === "bold italic") { buttonFontWeight = "bold"; buttonFontStyle = "italic"; }
+        }
+        button.style.cssText = `width: 100%; background: #1a1a1a; border: 1px solid #0a0a0a; border-top: 1px solid #404040; border-left: 1px solid #404040; color: #ffffff; padding: 8px 24px 8px 8px; font-family: ${buttonFontFamily}; font-style: ${buttonFontStyle}; font-weight: ${buttonFontWeight}; font-size: 12px; text-align: left; cursor: pointer; box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3); position: relative;`;
+        const buttonText = document.createElement("span");
+        buttonText.textContent = selectElement.options[selectElement.selectedIndex]?.text || selectElement.options[0]?.text || "";
+        const buttonArrow = document.createElement("span");
+        buttonArrow.style.cssText = "position: absolute; right: 6px; top: 50%; transform: translateY(-50%); font-size: 10px; color: #e0e0e0; pointer-events: none;";
+        buttonArrow.innerHTML = '<span style="display: inline-block; transform: scaleX(1.4);">▼</span>';
+        button.appendChild(buttonText);
+        button.appendChild(buttonArrow);
+        const dropdown = document.createElement("div");
+        dropdown.className = "custom-dropdown";
+        dropdown.style.cssText = "display: none; position: absolute; top: 100%; left: 0; right: 0; background: #2b2b2b; border: 1px solid #0a0a0a; border-top: 1px solid #404040; border-left: 1px solid #404040; z-index: 1000; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5); margin-top: 2px; max-height: 200px; overflow-y: auto;";
+        Array.from(selectElement.options).forEach((option, index) => {
+            const item = document.createElement("div");
+            item.className = "custom-dropdown-item";
+            let fontFamily = currentFontFamily;
+            let fontStyle = "normal";
+            let fontWeight = "normal";
+            if (selectElement.id === "settingsFont") {
+                const fontValue = option.value;
+                if (fontValue === "PressStart2P") fontFamily = '"PressStart2P", monospace';
+                else if (fontValue === "Silkscreen") fontFamily = '"Silkscreen", monospace';
+                else if (fontValue === "Tempus Sans ITC") fontFamily = '"Tempus Sans ITC", monospace';
+                else if (fontValue === "MesloLGS NF") fontFamily = '"MesloLGS NF", monospace';
+                else if (fontValue === "chevyray") fontFamily = '"chevyray", monospace';
+                else if (fontValue === "chevyrayOeuf") fontFamily = '"chevyrayOeuf", monospace';
+                else if (fontValue === "monospace") fontFamily = "monospace";
+                else fontFamily = fontValue;
+            } else if (selectElement.id === "settingsFontStyle") {
+                const styleValue = option.value;
+                if (styleValue === "italic") fontStyle = "italic";
+                else if (styleValue === "bold") fontWeight = "bold";
+                else if (styleValue === "bold italic") { fontWeight = "bold"; fontStyle = "italic"; }
+            }
+            item.style.cssText = `padding: 8px; cursor: pointer; font-family: ${fontFamily}; font-style: ${fontStyle}; font-weight: ${fontWeight}; font-size: 12px; color: #e0e0e0; border-bottom: 1px solid #0a0a0a;`;
+            item.textContent = option.text;
+            item.dataset.value = option.value;
+            if (index === selectElement.selectedIndex) {
+                item.style.background = "#404040";
+            }
+            item.onclick = (e) => {
+                e.stopPropagation();
+                selectElement.selectedIndex = index;
+                selectElement.value = option.value;
+                buttonText.textContent = option.text;
+                if (selectElement.id === "settingsFont") {
+                    const fontValue = option.value;
+                    let newFontFamily = "'chevyray', monospace";
+                    if (fontValue === "PressStart2P") newFontFamily = '"PressStart2P", monospace';
+                    else if (fontValue === "Silkscreen") newFontFamily = '"Silkscreen", monospace';
+                    else if (fontValue === "Tempus Sans ITC") newFontFamily = '"Tempus Sans ITC", monospace';
+                    else if (fontValue === "MesloLGS NF") newFontFamily = '"MesloLGS NF", monospace';
+                    else if (fontValue === "chevyray") newFontFamily = '"chevyray", monospace';
+                    else if (fontValue === "chevyrayOeuf") newFontFamily = '"chevyrayOeuf", monospace';
+                    else if (fontValue === "monospace") newFontFamily = "monospace";
+                    else newFontFamily = fontValue;
+                    button.style.fontFamily = newFontFamily;
+                } else if (selectElement.id === "settingsFontStyle") {
+                    const styleValue = option.value;
+                    let newFontStyle = "normal";
+                    let newFontWeight = "normal";
+                    if (styleValue === "italic") newFontStyle = "italic";
+                    else if (styleValue === "bold") newFontWeight = "bold";
+                    else if (styleValue === "bold italic") { newFontWeight = "bold"; newFontStyle = "italic"; }
+                    button.style.fontStyle = newFontStyle;
+                    button.style.fontWeight = newFontWeight;
+                }
+                dropdown.querySelectorAll(".custom-dropdown-item").forEach(i => i.style.background = "");
+                item.style.background = "#404040";
+                dropdown.style.display = "none";
+                selectElement.dispatchEvent(new Event('change', { bubbles: true }));
+            };
+            dropdown.appendChild(item);
+        });
+        wrapper.appendChild(button);
+        wrapper.appendChild(dropdown);
+        button.onclick = (e) => {
+            e.stopPropagation();
+            dropdown.style.display = dropdown.style.display === "none" ? "block" : "none";
+        };
+        document.addEventListener("click", (e) => {
+            if (!wrapper.contains(e.target)) {
+                dropdown.style.display = "none";
+            }
+        });
+        selectElement.addEventListener("change", () => {
+            buttonText.textContent = selectElement.options[selectElement.selectedIndex]?.text || "";
+            if (selectElement.id === "settingsFont") {
+                const selectedValue = selectElement.options[selectElement.selectedIndex]?.value || "";
+                let newFontFamily = "'chevyray', monospace";
+                if (selectedValue === "PressStart2P") newFontFamily = '"PressStart2P", monospace';
+                else if (selectedValue === "Silkscreen") newFontFamily = '"Silkscreen", monospace';
+                else if (selectedValue === "Tempus Sans ITC") newFontFamily = '"Tempus Sans ITC", monospace';
+                else if (selectedValue === "MesloLGS NF") newFontFamily = '"MesloLGS NF", monospace';
+                else if (selectedValue === "chevyray") newFontFamily = '"chevyray", monospace';
+                else if (selectedValue === "chevyrayOeuf") newFontFamily = '"chevyrayOeuf", monospace';
+                else if (selectedValue === "monospace") newFontFamily = "monospace";
+                else newFontFamily = selectedValue;
+                button.style.fontFamily = newFontFamily;
+            } else if (selectElement.id === "settingsFontStyle") {
+                const selectedValue = selectElement.options[selectElement.selectedIndex]?.value || "";
+                let newFontStyle = "normal";
+                let newFontWeight = "normal";
+                if (selectedValue === "italic") newFontStyle = "italic";
+                else if (selectedValue === "bold") newFontWeight = "bold";
+                else if (selectedValue === "bold italic") { newFontWeight = "bold"; newFontStyle = "italic"; }
+                button.style.fontStyle = newFontStyle;
+                button.style.fontWeight = newFontWeight;
+            }
+            dropdown.querySelectorAll(".custom-dropdown-item").forEach((item, idx) => {
+                item.style.background = idx === selectElement.selectedIndex ? "#404040" : "";
+            });
+        });
+    }
+    const btnSettings = document.getElementById("btnSettings");
+    const settingsDialog = document.getElementById("settingsDialog");
+    if (btnSettings && settingsDialog) {
+        const settingsFont = document.getElementById("settingsFont");
+        const settingsFontSize = document.getElementById("settingsFontSize");
+        const settingsFontStyle = document.getElementById("settingsFontStyle");
+        const settingsUIScale = document.getElementById("settingsUIScale");
+        const settingsUIScaleNumber = document.getElementById("settingsUIScaleNumber");
+        const settingsUIScaleValue = document.getElementById("settingsUIScaleValue");
+        const settingsPixelRendering = document.getElementById("settingsPixelRendering");
+        const settingsAutoSave = document.getElementById("settingsAutoSave");
+        const settingsShowGrid = document.getElementById("settingsShowGrid");
+        const settingsGifAnimations = document.getElementById("settingsGifAnimations");
+        const settingsLightEffects = document.getElementById("settingsLightEffects");
+        const settingsOK = document.getElementById("settingsOK");
+        const settingsCancel = document.getElementById("settingsCancel");
+        const settingsDefaults = document.getElementById("settingsDefaults");
+        const settingsReset = document.getElementById("settingsReset");
+        const availableFonts = ["Arial", "chevyray", "chevyrayOeuf", "Comic Sans MS", "Courier New", "Georgia", "Helvetica", "Impact", "MesloLGS NF", "monospace", "PressStart2P", "Silkscreen", "Tahoma", "Tempus Sans ITC", "Times New Roman", "Trebuchet MS", "Verdana"];
+        availableFonts.sort();
+        if (settingsFont) {
+            settingsFont.innerHTML = "";
+            availableFonts.forEach(font => {
+                const option = document.createElement("option");
+                option.value = font;
+                option.textContent = font === "PressStart2P" ? "Press Start 2P" : font === "monospace" ? "Monospace" : font;
+                settingsFont.appendChild(option);
+            });
+            const savedFont = localStorage.getItem("editorFont") || "chevyray";
+            settingsFont.value = savedFont;
+        }
+    }
+    function initCustomDropdowns() {
+        document.querySelectorAll("select:not([data-custom-dropdown])").forEach(select => {
+            createCustomDropdown(select);
+        });
+    }
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initCustomDropdowns);
+    } else {
+        initCustomDropdowns();
+    }
+    const dropdownObserver = new MutationObserver((mutations) => {
+        mutations.forEach((mutation) => {
+            mutation.addedNodes.forEach((node) => {
+                if (node.nodeType === 1) {
+                    if (node.tagName === 'SELECT' && !node.dataset.customDropdown) {
+                        createCustomDropdown(node);
+                    } else if (node.querySelectorAll) {
+                        node.querySelectorAll('select:not([data-custom-dropdown])').forEach(select => {
+                            createCustomDropdown(select);
+                        });
+                    }
+                }
+            });
+        });
+    });
+    dropdownObserver.observe(document.body, { childList: true, subtree: true });
+    if (btnSettings && settingsDialog) {
+        const settingsFont = document.getElementById("settingsFont");
+        const savedFont = localStorage.getItem("editorFont") || "chevyray";
+        const savedFontSize = localStorage.getItem("editorFontSize") || "12";
+        const savedFontStyle = localStorage.getItem("editorFontStyle") || "normal";
+        const savedUIScale = localStorage.getItem("editorUIScale") || "1";
+        const savedPixelRendering = localStorage.getItem("editorPixelRendering") !== "false";
+        const savedAutoSave = localStorage.getItem("editorAutoSave") !== "false";
+        const savedShowGrid = localStorage.getItem("editorShowGrid") !== "false";
+        const savedGifAnimations = localStorage.getItem("editorGifAnimations") !== "false";
+        const savedLightEffects = localStorage.getItem("editorLightEffects") !== "false";
+        function applyFont(font, save = true) {
+            const fontFamily = getFontFamily(font);
+            document.body.style.fontFamily = fontFamily;
+            const style = document.createElement("style");
+            style.id = "fontStyle";
+            const existing = document.getElementById("fontStyle");
+            if (existing) existing.remove();
+            style.textContent = `* { font-family: ${fontFamily} !important; }`;
+            document.head.appendChild(style);
+            document.querySelectorAll(".custom-dropdown-button").forEach(button => {
+                const select = button.parentElement.querySelector("select");
+                if (select && select.id !== "settingsFont") {
+                    button.style.fontFamily = fontFamily;
+                }
+            });
+            document.querySelectorAll(".custom-dropdown-item").forEach(item => {
+                const select = item.closest(".custom-dropdown")?.parentElement?.querySelector("select");
+                if (select && select.id !== "settingsFont") {
+                    item.style.fontFamily = fontFamily;
+                }
+            });
+            document.querySelectorAll(".color-scheme-item").forEach(item => {
+                item.style.fontFamily = fontFamily;
+            });
+            const aboutDialog = document.getElementById("aboutDialog");
+            if (aboutDialog) {
+                const aboutContent = aboutDialog.querySelector(".dialog-content");
+                if (aboutContent) {
+                    aboutContent.style.fontFamily = fontFamily;
+                    const h3 = aboutContent.querySelector("h3");
+                    if (h3) h3.style.fontFamily = fontFamily;
+                    aboutContent.querySelectorAll("p, span, div, a").forEach(el => {
+                        el.style.fontFamily = fontFamily;
+                    });
+                }
+            }
+            const historyList = document.getElementById("historyList");
+            if (historyList) {
+                historyList.style.fontFamily = fontFamily;
+                historyList.querySelectorAll("div").forEach(item => {
+                    item.style.fontFamily = fontFamily;
+                });
+            }
+            document.querySelectorAll("h3").forEach(h3 => {
+                h3.style.fontFamily = fontFamily;
+            });
+            const settingsDialog = document.getElementById("settingsDialog");
+            if (settingsDialog) {
+                const settingsContent = settingsDialog.querySelector(".dialog-content");
+                if (settingsContent) {
+                    const h3 = settingsContent.querySelector("h3");
+                    if (h3) h3.style.fontFamily = fontFamily;
+                }
+            }
+            if (save) localStorage.setItem("editorFont", font);
+        }
+        function applyFontSize(size, save = true) {
+            document.body.style.fontSize = size + "px";
+            const style = document.createElement("style");
+            style.id = "fontSizeStyle";
+            const existing = document.getElementById("fontSizeStyle");
+            if (existing) existing.remove();
+            style.textContent = `body { font-size: ${size}px !important; } button, input, select, label, span, .tab { font-size: ${size}px !important; }`;
+            document.head.appendChild(style);
+            if (save) localStorage.setItem("editorFontSize", size);
+        }
+        function applyFontStyle(style, save = true) {
+            const styleElement = document.createElement("style");
+            styleElement.id = "fontStyleStyle";
+            const existing = document.getElementById("fontStyleStyle");
+            if (existing) existing.remove();
+            let fontStyle = "normal";
+            let fontWeight = "normal";
+            if (style === "italic") fontStyle = "italic";
+            else if (style === "bold") fontWeight = "bold";
+            else if (style === "bold italic") { fontWeight = "bold"; fontStyle = "italic"; }
+            styleElement.textContent = `body, button, input, select, label, span, .tab { font-style: ${fontStyle} !important; font-weight: ${fontWeight} !important; }`;
+            document.head.appendChild(styleElement);
+            if (save) localStorage.setItem("editorFontStyle", style);
+        }
+        function applyUIScale(scale, save = true) {
+            const style = document.createElement("style");
+            style.id = "uiScaleStyle";
+            const existing = document.getElementById("uiScaleStyle");
+            if (existing) existing.remove();
+            const baseFontSize = parseFloat(localStorage.getItem("editorFontSize") || "12");
+            style.textContent = `
+                .main-container {
+                    transform: scale(${scale});
+                    transform-origin: top left;
+                    width: ${100 / scale}%;
+                    height: ${100 / scale}%;
+                }
+                body {
+                    font-size: ${baseFontSize * scale}px !important;
+                }
+            `;
+            document.head.appendChild(style);
+            if (save) localStorage.setItem("editorUIScale", scale);
+        }
+        function applyPixelRendering(enabled, save = true) {
+            const style = document.createElement("style");
+            style.id = "pixelRenderingStyle";
+            const existing = document.getElementById("pixelRenderingStyle");
+            if (existing) existing.remove();
+            if (enabled) {
+                style.textContent = `* { image-rendering: pixelated !important; image-rendering: -moz-crisp-edges !important; image-rendering: crisp-edges !important; }`;
+            }
+            document.head.appendChild(style);
+            if (save) localStorage.setItem("editorPixelRendering", enabled);
+        }
+        function applyShowGrid(enabled, save = true) {
+            if (save) localStorage.setItem("editorShowGrid", enabled ? "true" : "false");
+            redraw();
+        }
+        function applyGifAnimations(enabled, save = true) {
+            if (save) localStorage.setItem("editorGifAnimations", enabled ? "true" : "false");
+            redraw();
+        }
+        function applyLightEffects(enabled, save = true) {
+            if (save) localStorage.setItem("editorLightEffects", enabled ? "true" : "false");
+            redraw();
+        }
+        applyFont(savedFont);
+        applyFontSize(savedFontSize);
+        applyFontStyle(savedFontStyle);
+        applyUIScale(savedUIScale);
+        applyPixelRendering(savedPixelRendering);
+        applyShowGrid(savedShowGrid);
+        applyGifAnimations(savedGifAnimations);
+        applyLightEffects(savedLightEffects);
+        const updateUIScaleDisplay = (value) => {
+            const percent = Math.round(value * 100);
+            if (settingsUIScaleValue) settingsUIScaleValue.textContent = percent + "%";
+            if (settingsUIScaleNumber) settingsUIScaleNumber.value = value;
+        };
+        let originalSettings = {};
+        btnSettings.onclick = (e) => {
+            e.stopPropagation();
+            const currentFont = localStorage.getItem("editorFont") || "chevyray";
+            const currentFontSize = localStorage.getItem("editorFontSize") || "12";
+            const currentFontStyle = localStorage.getItem("editorFontStyle") || "normal";
+            const currentUIScale = parseFloat(localStorage.getItem("editorUIScale") || "1");
+            const currentPixelRendering = localStorage.getItem("editorPixelRendering") !== "false";
+            const currentAutoSave = localStorage.getItem("editorAutoSave") !== "false";
+            const currentShowGrid = localStorage.getItem("editorShowGrid") !== "false";
+            const currentGifAnimations = localStorage.getItem("editorGifAnimations") !== "false";
+            const currentLightEffects = localStorage.getItem("editorLightEffects") !== "false";
+            originalSettings = {
+                font: currentFont,
+                fontSize: currentFontSize,
+                fontStyle: currentFontStyle,
+                uiScale: currentUIScale,
+                pixelRendering: currentPixelRendering,
+                autoSave: currentAutoSave,
+                showGrid: currentShowGrid,
+                gifAnimations: currentGifAnimations,
+                lightEffects: currentLightEffects
+            };
+            if (settingsFont) settingsFont.value = currentFont;
+            if (settingsFontSize) settingsFontSize.value = currentFontSize;
+            if (settingsFontStyle) settingsFontStyle.value = currentFontStyle;
+            if (settingsUIScale) {
+                settingsUIScale.value = currentUIScale;
+                updateUIScaleDisplay(currentUIScale);
+            }
+            if (settingsPixelRendering) settingsPixelRendering.checked = currentPixelRendering;
+            if (settingsAutoSave) settingsAutoSave.checked = currentAutoSave;
+            if (settingsShowGrid) settingsShowGrid.checked = currentShowGrid;
+            if (settingsGifAnimations) settingsGifAnimations.checked = currentGifAnimations;
+            if (settingsLightEffects) settingsLightEffects.checked = currentLightEffects;
+            settingsDialog.style.display = "flex";
+        };
+        if (settingsFont) {
+            settingsFont.onchange = () => {
+                if (settingsFont.value) applyFont(settingsFont.value, false);
+            };
+        }
+        if (settingsFontSize) {
+            settingsFontSize.onchange = () => {
+                if (settingsFontSize.value) applyFontSize(settingsFontSize.value, false);
+            };
+        }
+        if (settingsFontStyle) {
+            settingsFontStyle.onchange = () => {
+                if (settingsFontStyle.value) applyFontStyle(settingsFontStyle.value, false);
+            };
+        }
+        if (settingsUIScale) {
+            settingsUIScale.oninput = () => {
+                const value = parseFloat(settingsUIScale.value);
+                updateUIScaleDisplay(value);
+                applyUIScale(value, false);
+            };
+        }
+        if (settingsUIScaleNumber) {
+            settingsUIScaleNumber.oninput = () => {
+                const value = parseFloat(settingsUIScaleNumber.value);
+                if (value >= 0.5 && value <= 2) {
+                    if (settingsUIScale) settingsUIScale.value = value;
+                    updateUIScaleDisplay(value);
+                    applyUIScale(value, false);
+                }
+            };
+        }
+        if (settingsPixelRendering) {
+            settingsPixelRendering.onchange = () => {
+                applyPixelRendering(settingsPixelRendering.checked, false);
+            };
+        }
+        if (settingsShowGrid) {
+            settingsShowGrid.onchange = () => {
+                applyShowGrid(settingsShowGrid.checked, false);
+            };
+        }
+        if (settingsGifAnimations) {
+            settingsGifAnimations.onchange = () => {
+                applyGifAnimations(settingsGifAnimations.checked, false);
+            };
+        }
+        if (settingsLightEffects) {
+            settingsLightEffects.onchange = () => {
+                applyLightEffects(settingsLightEffects.checked, false);
+            };
+        }
+        if (settingsOK) {
+            settingsOK.onclick = () => {
+                if (settingsFont) applyFont(settingsFont.value, true);
+                if (settingsFontSize) applyFontSize(settingsFontSize.value, true);
+                if (settingsFontStyle) applyFontStyle(settingsFontStyle.value, true);
+                if (settingsUIScale) applyUIScale(parseFloat(settingsUIScale.value), true);
+                if (settingsPixelRendering) applyPixelRendering(settingsPixelRendering.checked, true);
+                if (settingsAutoSave) localStorage.setItem("editorAutoSave", settingsAutoSave.checked);
+                if (settingsShowGrid) applyShowGrid(settingsShowGrid.checked, true);
+                if (settingsGifAnimations) applyGifAnimations(settingsGifAnimations.checked, true);
+                if (settingsLightEffects) applyLightEffects(settingsLightEffects.checked, true);
+                settingsDialog.style.display = "none";
+            };
+        }
+        const revertSettings = () => {
+            applyFont(originalSettings.font, false);
+            applyFontSize(originalSettings.fontSize, false);
+            applyUIScale(originalSettings.uiScale, false);
+            applyPixelRendering(originalSettings.pixelRendering, false);
+            applyShowGrid(originalSettings.showGrid, false);
+            applyGifAnimations(originalSettings.gifAnimations, false);
+            applyLightEffects(originalSettings.lightEffects, false);
+            if (settingsFont) {
+                settingsFont.value = originalSettings.font;
+                settingsFont.dispatchEvent(new Event('change', { bubbles: true }));
+                const fontWrapper = settingsFont.closest("div[style*='position: relative']");
+                if (fontWrapper) {
+                    const buttonText = fontWrapper.querySelector(".custom-dropdown-button span");
+                    if (buttonText) {
+                        const selectedOption = settingsFont.options[settingsFont.selectedIndex];
+                        if (selectedOption) {
+                            buttonText.textContent = selectedOption.text;
+                            const button = fontWrapper.querySelector(".custom-dropdown-button");
+                            if (button) {
+                                const fontValue = selectedOption.value;
+                                let newFontFamily = "'chevyray', monospace";
+                                if (fontValue === "PressStart2P") newFontFamily = '"PressStart2P", monospace';
+                                else if (fontValue === "Silkscreen") newFontFamily = '"Silkscreen", monospace';
+                                else if (fontValue === "Tempus Sans ITC") newFontFamily = '"Tempus Sans ITC", monospace';
+                                else if (fontValue === "MesloLGS NF") newFontFamily = '"MesloLGS NF", monospace';
+                                else if (fontValue === "chevyray") newFontFamily = '"chevyray", monospace';
+                                else if (fontValue === "chevyrayOeuf") newFontFamily = '"chevyrayOeuf", monospace';
+                                else if (fontValue === "monospace") newFontFamily = "monospace";
+                                else newFontFamily = fontValue;
+                                button.style.fontFamily = newFontFamily;
+                            }
+                        }
+                    }
+                }
+            }
+            if (settingsFontSize) {
+                settingsFontSize.value = originalSettings.fontSize;
+                settingsFontSize.dispatchEvent(new Event('change', { bubbles: true }));
+                const fontSizeWrapper = settingsFontSize.closest("div[style*='position: relative']");
+                if (fontSizeWrapper) {
+                    const buttonText = fontSizeWrapper.querySelector(".custom-dropdown-button span");
+                    if (buttonText) {
+                        const selectedOption = settingsFontSize.options[settingsFontSize.selectedIndex];
+                        if (selectedOption) buttonText.textContent = selectedOption.text;
+                    }
+                }
+            }
+            if (settingsFontStyle) {
+                settingsFontStyle.value = originalSettings.fontStyle;
+                settingsFontStyle.dispatchEvent(new Event('change', { bubbles: true }));
+                const fontStyleWrapper = settingsFontStyle.closest("div[style*='position: relative']");
+                if (fontStyleWrapper) {
+                    const buttonText = fontStyleWrapper.querySelector(".custom-dropdown-button span");
+                    if (buttonText) {
+                        const selectedOption = settingsFontStyle.options[settingsFontStyle.selectedIndex];
+                        if (selectedOption) {
+                            buttonText.textContent = selectedOption.text;
+                            const button = fontStyleWrapper.querySelector(".custom-dropdown-button");
+                            if (button) {
+                                const styleValue = selectedOption.value;
+                                let newFontStyle = "normal";
+                                let newFontWeight = "normal";
+                                if (styleValue === "italic") newFontStyle = "italic";
+                                else if (styleValue === "bold") newFontWeight = "bold";
+                                else if (styleValue === "bold italic") { newFontWeight = "bold"; newFontStyle = "italic"; }
+                                button.style.fontStyle = newFontStyle;
+                                button.style.fontWeight = newFontWeight;
+                            }
+                        }
+                    }
+                }
+            }
+            if (settingsUIScale) {
+                settingsUIScale.value = originalSettings.uiScale;
+                updateUIScaleDisplay(originalSettings.uiScale);
+            }
+            if (settingsUIScaleNumber) settingsUIScaleNumber.value = originalSettings.uiScale;
+            if (settingsPixelRendering) settingsPixelRendering.checked = originalSettings.pixelRendering;
+            if (settingsAutoSave) settingsAutoSave.checked = originalSettings.autoSave;
+            if (settingsShowGrid) settingsShowGrid.checked = originalSettings.showGrid;
+            if (settingsGifAnimations) settingsGifAnimations.checked = originalSettings.gifAnimations;
+            if (settingsLightEffects) settingsLightEffects.checked = originalSettings.lightEffects;
+            settingsDialog.style.display = "none";
+        };
+        if (settingsCancel) {
+            settingsCancel.onclick = () => {
+                revertSettings();
+            };
+        }
+        if (settingsDefaults) {
+            settingsDefaults.onclick = () => {
+                if (settingsFont) {
+                    settingsFont.value = "chevyray";
+                    applyFont("chevyray", false);
+                }
+                if (settingsFontSize) {
+                    settingsFontSize.value = "12";
+                    applyFontSize("12", false);
+                }
+                if (settingsFontStyle) {
+                    settingsFontStyle.value = "normal";
+                    applyFontStyle("normal", false);
+                }
+                if (settingsUIScale) {
+                    settingsUIScale.value = "1";
+                    updateUIScaleDisplay(1);
+                    applyUIScale(1, false);
+                }
+                if (settingsUIScaleNumber) {
+                    settingsUIScaleNumber.value = "1";
+                }
+                if (settingsPixelRendering) {
+                    settingsPixelRendering.checked = true;
+                    applyPixelRendering(true, false);
+                }
+                if (settingsAutoSave) {
+                    settingsAutoSave.checked = true;
+                }
+                if (settingsShowGrid) {
+                    settingsShowGrid.checked = true;
+                    applyShowGrid(true, false);
+                }
+                if (settingsGifAnimations) {
+                    settingsGifAnimations.checked = true;
+                    applyGifAnimations(true, false);
+                }
+                if (settingsLightEffects) {
+                    settingsLightEffects.checked = true;
+                    applyLightEffects(true, false);
+                }
+            };
+        }
+        const resetEditorToDefaults = () => {
+            zoomLevel = 3;
+            panX = 0;
+            panY = 0;
+            backgroundColor = "#006400";
+            const leftPanel = document.querySelector(".left-panel");
+            const rightPanel = document.querySelector(".right-panel");
+            const timelineContainer = document.querySelector(".timeline-container");
+            const timelineView = document.querySelector(".timeline-view");
+            const canvasTimelineSplitter = document.getElementById("canvasTimelineSplitter");
+            const toolbar = document.querySelector(".toolbar");
+            const spriteList = document.querySelector(".sprite-list");
+            const mainSplitter = document.getElementById("mainSplitter");
+            if (toolbar) {
+                toolbar.style.display = "flex";
+                toolbar.style.visibility = "visible";
+                toolbar.style.opacity = "1";
+                localStorage.setItem("toolbarVisible", "true");
+            }
+            if (leftPanel) {
+                leftPanel.style.display = "flex";
+                leftPanel.style.visibility = "visible";
+                leftPanel.style.width = "300px";
+                localStorage.setItem("leftPanelVisible", "true");
+            }
+            if (rightPanel) {
+                rightPanel.style.display = "flex";
+                rightPanel.style.visibility = "visible";
+                rightPanel.style.width = "250px";
+                localStorage.setItem("rightPanelVisible", "true");
+            }
+            if (timelineContainer) {
+                timelineContainer.style.setProperty("display", "flex", "important");
+                timelineContainer.style.setProperty("visibility", "visible", "important");
+                timelineContainer.style.setProperty("opacity", "1", "important");
+                timelineContainer.style.removeProperty("flex");
+                timelineContainer.style.removeProperty("height");
+                const isTouch = (navigator.maxTouchPoints && navigator.maxTouchPoints > 1) || (window.matchMedia && window.matchMedia("(pointer: coarse)").matches);
+                timelineContainer.style.height = isTouch ? "250px" : "218px";
+                timelineContainer.style.flex = isTouch ? "0 0 250px" : "0 0 218px";
+                timelineContainer.style.minHeight = isTouch ? "230px" : "180px";
+                localStorage.setItem("timelineVisible", "true");
+            }
+            if (timelineView) {
+                timelineView.style.setProperty("display", "block", "important");
+                timelineView.style.setProperty("visibility", "visible", "important");
+                timelineView.style.setProperty("opacity", "1", "important");
+            }
+            if (canvasTimelineSplitter) {
+                canvasTimelineSplitter.style.setProperty("display", "block", "important");
+                canvasTimelineSplitter.style.setProperty("visibility", "visible", "important");
+                canvasTimelineSplitter.style.setProperty("opacity", "1", "important");
+            }
+            if (mainSplitter) {
+                mainSplitter.style.height = "calc(100% - 222px)";
+                mainSplitter.style.maxHeight = "calc(100% - 222px)";
+            }
+            if (spriteList) spriteList.style.height = "300px";
+            selectedPieces.clear();
+            currentFrame = 0;
+            currentDir = 2;
+            isPlaying = false;
+            undoStack = [];
+            undoIndex = -1;
+            localStorage.setItem("mainCanvasZoom", zoomLevel);
+            applyFont("chevyray", true);
+            applyFontSize("12", true);
+            applyFontStyle("normal", true);
+            applyUIScale(1, true);
+            applyPixelRendering(true, true);
+            localStorage.setItem("editorAutoSave", "true");
+            applyShowGrid(true, true);
+            applyGifAnimations(true, true);
+            applyLightEffects(true, true);
+            applyColorScheme("default");
+            if (settingsFont) {
+                settingsFont.value = "chevyray";
+                settingsFont.dispatchEvent(new Event('change', { bubbles: true }));
+                const fontWrapper = settingsFont.closest("div[style*='position: relative']");
+                if (fontWrapper) {
+                    const buttonText = fontWrapper.querySelector(".custom-dropdown-button span");
+                    if (buttonText) {
+                        const selectedOption = settingsFont.options[settingsFont.selectedIndex];
+                        if (selectedOption) {
+                            buttonText.textContent = selectedOption.text;
+                            const button = fontWrapper.querySelector(".custom-dropdown-button");
+                            if (button) button.style.fontFamily = '"chevyray", monospace';
+                        }
+                    }
+                }
+            }
+            if (settingsFontSize) {
+                settingsFontSize.value = "12";
+                settingsFontSize.dispatchEvent(new Event('change', { bubbles: true }));
+                const fontSizeWrapper = settingsFontSize.closest("div[style*='position: relative']");
+                if (fontSizeWrapper) {
+                    const buttonText = fontSizeWrapper.querySelector(".custom-dropdown-button span");
+                    if (buttonText) {
+                        const selectedOption = settingsFontSize.options[settingsFontSize.selectedIndex];
+                        if (selectedOption) buttonText.textContent = selectedOption.text;
+                    }
+                }
+            }
+            if (settingsFontStyle) {
+                settingsFontStyle.value = "normal";
+                settingsFontStyle.dispatchEvent(new Event('change', { bubbles: true }));
+                const fontStyleWrapper = settingsFontStyle.closest("div[style*='position: relative']");
+                if (fontStyleWrapper) {
+                    const buttonText = fontStyleWrapper.querySelector(".custom-dropdown-button span");
+                    if (buttonText) {
+                        const selectedOption = settingsFontStyle.options[settingsFontStyle.selectedIndex];
+                        if (selectedOption) {
+                            buttonText.textContent = selectedOption.text;
+                            const button = fontStyleWrapper.querySelector(".custom-dropdown-button");
+                            if (button) {
+                                button.style.fontStyle = "normal";
+                                button.style.fontWeight = "normal";
+                            }
+                        }
+                    }
+                }
+            }
+            if (settingsUIScale) {
+                settingsUIScale.value = "1";
+                updateUIScaleDisplay(1);
+            }
+            if (settingsUIScaleNumber) settingsUIScaleNumber.value = "1";
+            if (settingsPixelRendering) settingsPixelRendering.checked = true;
+            if (settingsAutoSave) settingsAutoSave.checked = true;
+            if (settingsShowGrid) settingsShowGrid.checked = true;
+            updateTabs();
+            updateItemsCombo();
+            updateItemSettings();
+            updateSoundsList();
+            localStorage.setItem("timelineVisible", "true");
+            resizeCanvas();
+            setTimeout(() => {
+                localStorage.setItem("timelineVisible", "true");
+                const timelineContainer = document.querySelector(".timeline-container");
+                const timelineView = document.querySelector(".timeline-view");
+                const canvasTimelineSplitter = document.getElementById("canvasTimelineSplitter");
+                const mainSplitter = document.getElementById("mainSplitter");
+                if (timelineContainer) {
+                    timelineContainer.style.setProperty("display", "flex", "important");
+                    timelineContainer.style.setProperty("visibility", "visible", "important");
+                    timelineContainer.style.setProperty("opacity", "1", "important");
+                    timelineContainer.style.removeProperty("flex");
+                    timelineContainer.style.removeProperty("height");
+                    const isTouch = (navigator.maxTouchPoints && navigator.maxTouchPoints > 1) || (window.matchMedia && window.matchMedia("(pointer: coarse)").matches);
+                    timelineContainer.style.height = isTouch ? "250px" : "218px";
+                    timelineContainer.style.flex = isTouch ? "0 0 250px" : "0 0 218px";
+                    timelineContainer.style.minHeight = isTouch ? "230px" : "180px";
+                }
+                if (timelineView) {
+                    timelineView.style.setProperty("display", "block", "important");
+                    timelineView.style.setProperty("visibility", "visible", "important");
+                    timelineView.style.setProperty("opacity", "1", "important");
+                }
+                if (canvasTimelineSplitter) {
+                    canvasTimelineSplitter.style.setProperty("display", "block", "important");
+                    canvasTimelineSplitter.style.setProperty("visibility", "visible", "important");
+                    canvasTimelineSplitter.style.setProperty("opacity", "1", "important");
+                }
+                if (mainSplitter) {
+                    mainSplitter.style.height = "calc(100% - 222px)";
+                    mainSplitter.style.maxHeight = "calc(100% - 222px)";
+                }
+                resizeCanvas();
+                drawTimeline();
+            }, 100);
+            redraw();
+            updateUIVisibility();
+        };
+        if (settingsReset) {
+            settingsReset.onclick = (e) => {
+                e.stopPropagation();
+                showConfirmDialog("Reset the editor to default state? This will reset zoom, pan, selections, UI layout, and all settings.", (confirmed) => {
+                    if (confirmed) {
+                        resetEditorToDefaults();
+                        updateFrameInfo();
+                        updateSpritesList();
+                        updateDefaultsTable();
+                        saveSession();
+                        settingsDialog.style.display = "none";
+                    }
+                });
+            };
+        }
+        settingsDialog.onclick = (e) => {
+            const dialogContent = settingsDialog.querySelector(".dialog-content");
+            if (e.target === settingsDialog || (dialogContent && !dialogContent.contains(e.target))) {
+                revertSettings();
+            }
+        };
+        document.addEventListener("click", (e) => {
+            if (settingsDialog.style.display === "flex") {
+                if (btnSettings.contains(e.target)) return;
+                const confirmDialog = document.querySelector(".dialog-overlay[style*='z-index: 10001']");
+                if (confirmDialog && confirmDialog.contains(e.target)) return;
+                const dialogContent = settingsDialog.querySelector(".dialog-content");
+                if (!settingsDialog.contains(e.target) || (dialogContent && !dialogContent.contains(e.target) && e.target === settingsDialog)) {
+                    revertSettings();
+                }
+            }
+        });
+    }
+    if (btnColorScheme) {
+        const wrapperDiv = btnColorScheme.parentElement;
+        if (wrapperDiv) {
+            wrapperDiv.parentNode.insertBefore(bgColorInput, wrapperDiv.nextSibling);
+        }
+    }
+    function createCustomSpinners() {
+        const numberInputs = document.querySelectorAll('input[type="number"]');
+        numberInputs.forEach(input => {
+            if (input.parentElement.classList.contains('number-input-wrapper')) return;
+            const wrapper = document.createElement('div');
+            wrapper.className = 'number-input-wrapper';
+            input.parentNode.insertBefore(wrapper, input);
+            wrapper.appendChild(input);
+            const spinnerContainer = document.createElement('div');
+            spinnerContainer.className = 'number-spinner-container';
+            const spinnerUp = document.createElement('div');
+            spinnerUp.className = 'number-spinner number-spinner-up';
+            spinnerUp.innerHTML = '<span style="display: inline-block; transform: scaleX(1.4);">▲</span>';
+            spinnerUp.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (input.disabled) return;
+                const step = parseFloat(input.step) || 1;
+                const max = input.max !== '' ? parseFloat(input.max) : null;
+                let value = parseFloat(input.value) || 0;
+                value += step;
+                if (max !== null && value > max) value = max;
+                input.value = value;
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+            };
+            const spinnerDown = document.createElement('div');
+            spinnerDown.className = 'number-spinner number-spinner-down';
+            spinnerDown.innerHTML = '<span style="display: inline-block; transform: scaleX(1.4);">▼</span>';
+            spinnerDown.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (input.disabled) return;
+                const step = parseFloat(input.step) || 1;
+                const min = input.min !== '' ? parseFloat(input.min) : null;
+                let value = parseFloat(input.value) || 0;
+                value -= step;
+                if (min !== null && value < min) value = min;
+                input.value = value;
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+            };
+            const updateSpinnerState = () => {
+                if (input.disabled) {
+                    spinnerUp.style.pointerEvents = 'none';
+                    spinnerUp.style.opacity = '0.5';
+                    spinnerDown.style.pointerEvents = 'none';
+                    spinnerDown.style.opacity = '0.5';
+                } else {
+                    spinnerUp.style.pointerEvents = 'auto';
+                    spinnerUp.style.opacity = '1';
+                    spinnerDown.style.pointerEvents = 'auto';
+                    spinnerDown.style.opacity = '1';
+                }
+            };
+            updateSpinnerState();
+            const inputObserver = new MutationObserver(updateSpinnerState);
+            inputObserver.observe(input, { attributes: true, attributeFilter: ['disabled'] });
+            spinnerContainer.appendChild(spinnerUp);
+            spinnerContainer.appendChild(spinnerDown);
+            wrapper.appendChild(spinnerContainer);
+        });
+    }
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', createCustomSpinners);
+    } else {
+        createCustomSpinners();
+    }
+    const observer = new MutationObserver((mutations) => {
+        mutations.forEach((mutation) => {
+            mutation.addedNodes.forEach((node) => {
+                if (node.nodeType === 1) {
+                    if (node.tagName === 'INPUT' && node.type === 'number') {
+                        createCustomSpinners();
+                    } else if (node.querySelectorAll) {
+                        const inputs = node.querySelectorAll('input[type="number"]');
+                        if (inputs.length > 0) createCustomSpinners();
+                    }
+                }
+            });
+        });
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    const applyLabelShadows = () => {
+        document.querySelectorAll("label").forEach(label => {
+            if (label.textContent && label.textContent.includes(":")) {
+                const sliderGroup = label.nextElementSibling;
+                if (sliderGroup && sliderGroup.classList.contains("slider-group")) {
+                    label.style.textShadow = "1px 1px 2px rgba(0, 0, 0, 0.8), 0 0 2px rgba(0, 0, 0, 0.5)";
+                } else {
+                    label.style.textShadow = "1px 1px 2px rgba(0, 0, 0, 0.8), 0 0 4px rgba(0, 0, 0, 0.5)";
+                }
+            }
+        });
     };
+    applyLabelShadows();
+    const labelObserver = new MutationObserver(() => {
+        applyLabelShadows();
+    });
+    labelObserver.observe(document.body, { childList: true, subtree: true });
     document.getElementById("btnSwapKeys").onclick = (e) => {
         keysSwapped = !keysSwapped;
         e.target.classList.toggle("active", keysSwapped);
         saveSession();
     };
+    const btnAbout = document.getElementById("btnAbout");
+    const aboutDialog = document.getElementById("aboutDialog");
+    const aboutOK = document.getElementById("aboutOK");
+    const aboutVersion = document.getElementById("aboutVersion");
+    if (btnAbout && aboutDialog && aboutOK) {
+        const VERSION_HASH = "2.0.0";
+        if (aboutVersion) {
+            aboutVersion.textContent = `${VERSION_HASH}`;
+        }
+        const updateAboutFont = () => {
+            const currentFont = localStorage.getItem("editorFont") || "chevyray";
+            const fontFamily = getFontFamily(currentFont);
+            const aboutContent = aboutDialog.querySelector(".dialog-content");
+            if (aboutContent) {
+                aboutContent.style.fontFamily = fontFamily;
+                const h3 = aboutContent.querySelector("h3");
+                if (h3) h3.style.fontFamily = fontFamily;
+                aboutContent.querySelectorAll("p, span, div, a").forEach(el => {
+                    el.style.fontFamily = fontFamily;
+                });
+            }
+        };
+        const updateHistoryFont = () => {
+            const currentFont = localStorage.getItem("editorFont") || "chevyray";
+            const fontFamily = getFontFamily(currentFont);
+            const historyList = document.getElementById("historyList");
+            if (historyList) {
+                historyList.style.fontFamily = fontFamily;
+                historyList.querySelectorAll("div").forEach(item => {
+                    item.style.fontFamily = fontFamily;
+                });
+            }
+        };
+        const updateAllH3Fonts = () => {
+            const currentFont = localStorage.getItem("editorFont") || "chevyray";
+            let fontFamily = currentFont;
+            if (currentFont === "PressStart2P") fontFamily = '"PressStart2P", monospace';
+            else if (currentFont === "Silkscreen") fontFamily = '"Silkscreen", monospace';
+            else if (currentFont === "Tempus Sans ITC") fontFamily = '"Tempus Sans ITC", monospace';
+            else if (currentFont === "MesloLGS NF") fontFamily = '"MesloLGS NF", monospace';
+            else if (currentFont === "chevyray") fontFamily = '"chevyray", monospace';
+            else if (currentFont === "chevyrayOeuf") fontFamily = '"chevyrayOeuf", monospace';
+            else if (currentFont === "monospace") fontFamily = "monospace";
+            document.querySelectorAll("h3").forEach(h3 => {
+                h3.style.fontFamily = fontFamily;
+            });
+        };
+        updateAboutFont();
+        updateHistoryFont();
+        updateAllH3Fonts();
+        btnAbout.onclick = () => {
+            updateAboutFont();
+            aboutDialog.style.display = "flex";
+        };
+        aboutOK.onclick = () => {
+            aboutDialog.style.display = "none";
+        };
+        aboutDialog.onclick = (e) => {
+            if (e.target === aboutDialog) {
+                aboutDialog.style.display = "none";
+            }
+        };
+    }
+    const hotkeysDialog = document.getElementById("hotkeysDialog");
+    const hotkeysOK = document.getElementById("hotkeysOK");
+    const hotkeysContent = document.getElementById("hotkeysContent");
+    function updateHotkeysDialog() {
+        const currentFont = localStorage.getItem("editorFont") || "chevyray";
+        const fontFamily = getFontFamily(currentFont);
+        if (hotkeysContent) {
+            hotkeysContent.style.fontFamily = fontFamily;
+            hotkeysContent.innerHTML = `
+                <div style="margin-bottom: 12px;"><strong>File Operations:</strong></div>
+                <div style="margin-left: 16px; margin-bottom: 8px;">Ctrl+O - Open File</div>
+                <div style="margin-left: 16px; margin-bottom: 8px;">Ctrl+S - Save File</div>
+                <div style="margin-top: 16px; margin-bottom: 12px;"><strong>Editor:</strong></div>
+                <div style="margin-left: 16px; margin-bottom: 8px;">Ctrl+R - Reset Editor</div>
+                <div style="margin-left: 16px; margin-bottom: 8px;">Ctrl+Z - Undo</div>
+                <div style="margin-left: 16px; margin-bottom: 8px;">Ctrl+Y - Redo</div>
+                <div style="margin-left: 16px; margin-bottom: 8px;">ESC - Deselect / Close Dialogs</div>
+            `;
+        }
+    }
+    if (hotkeysDialog && hotkeysOK) {
+        hotkeysOK.onclick = () => {
+            hotkeysDialog.style.display = "none";
+        };
+        hotkeysDialog.onclick = (e) => {
+            if (e.target === hotkeysDialog) {
+                hotkeysDialog.style.display = "none";
+            }
+        };
+    }
     document.getElementById("btnDefaults").onclick = () => {
         const table = document.getElementById("defaultsTable");
         if (table.style.visibility === "hidden" || table.style.visibility === "") {
@@ -5346,6 +7484,8 @@ window.addEventListener("load", async () => {
         }
     };
     document.getElementById("btnEditScript").onclick = () => {
+        const currentFont = localStorage.getItem("editorFont") || "chevyray";
+        const fontFamily = getFontFamily(currentFont);
         const dialog = document.createElement("div");
         dialog.className = "dialog-overlay";
         dialog.style.display = "flex";
@@ -5356,7 +7496,7 @@ window.addEventListener("load", async () => {
         dialog.style.left = "0";
         dialog.style.width = "100%";
         dialog.style.height = "100%";
-        dialog.style.background = "rgba(0,0,0,0.7)";
+        dialog.style.background = "rgba(0,0,0,0)";
         dialog.style.zIndex = "10000";
         const content = document.createElement("div");
         content.style.background = "#444";
@@ -5367,11 +7507,11 @@ window.addEventListener("load", async () => {
         content.style.display = "flex";
         content.style.flexDirection = "column";
         content.innerHTML = `
-            <h3 style="margin-top:0;margin-bottom:10px;">Edit Script</h3>
-            <textarea id="scriptTextArea" style="flex:1;min-height:300px;background:#555;color:#eee;border:1px solid #777;padding:8px;font-family:monospace;font-size:12px;resize:none;">${currentAnimation.script || ""}</textarea>
+            <h3 style="margin-top:0;margin-bottom:10px;font-family:${fontFamily};">Edit Script</h3>
+            <textarea id="scriptTextArea" style="flex:1;min-height:300px;background:#555;color:#eee;border:1px solid #777;padding:8px;font-family:${fontFamily};font-size:12px;resize:none;">${currentAnimation.script || ""}</textarea>
             <div style="text-align:right;margin-top:10px;">
-                <button id="scriptCancel" style="background:#666;color:#eee;border:1px solid #777;padding:4px 12px;cursor:pointer;margin-right:5px;">Cancel</button>
-                <button id="scriptSave" style="background:#666;color:#eee;border:1px solid #777;padding:4px 12px;cursor:pointer;">Save</button>
+                <button id="scriptCancel" style="background:#666;color:#eee;border:1px solid #777;padding:4px 12px;cursor:pointer;margin-right:5px;font-family:${fontFamily};">Cancel</button>
+                <button id="scriptSave" style="background:#666;color:#eee;border:1px solid #777;padding:4px 12px;cursor:pointer;font-family:${fontFamily};">Save</button>
             </div>
         `;
         dialog.appendChild(content);
@@ -5526,16 +7666,16 @@ window.addEventListener("load", async () => {
         const height = mainCanvas.height / (window.devicePixelRatio || 1);
         const oldZoom = zoomFactors[zoomLevel] || 1.0;
         const rect = mainCanvas.getBoundingClientRect();
-        const mouseX = e.clientX - rect.left;
-        const mouseY = e.clientY - rect.top;
-        const oldWorldX = (mouseX - width / 2 - panX) / oldZoom;
-        const oldWorldY = (mouseY - height / 2 - panY) / oldZoom;
+        const adjustedMouseX = adjustCoordinateForUIScale(e.clientX, rect.left, rect, false);
+        const adjustedMouseY = adjustCoordinateForUIScale(e.clientY, rect.top, rect, true);
+        const oldWorldX = (adjustedMouseX - width / 2 - panX) / oldZoom;
+        const oldWorldY = (adjustedMouseY - height / 2 - panY) / oldZoom;
         const delta = e.deltaY > 0 ? -1 : 1;
         zoomLevel = Math.max(0, Math.min(7, zoomLevel + delta));
         localStorage.setItem("mainCanvasZoom", zoomLevel);
         const newZoom = zoomFactors[zoomLevel] || 1.0;
-        const newWorldX = (mouseX - width / 2 - panX) / newZoom;
-        const newWorldY = (mouseY - height / 2 - panY) / newZoom;
+        const newWorldX = (adjustedMouseX - width / 2 - panX) / newZoom;
+        const newWorldY = (adjustedMouseY - height / 2 - panY) / newZoom;
         const deltaX = newWorldX - oldWorldX;
         const deltaY = newWorldY - oldWorldY;
         panX -= deltaX * newZoom;
@@ -5670,14 +7810,28 @@ window.addEventListener("load", async () => {
     addWheelHandler("#itemLayer", (e) => document.getElementById("itemLayer").onchange(e));
     let isPanning = false;
     let panStartX = 0, panStartY = 0;
+    const getUIScale = () => {
+        return parseFloat(localStorage.getItem("editorUIScale") || "1");
+    };
+    const adjustCoordinateForUIScale = (clientCoord, rectCoord, rect, isY = false) => {
+        const visualCoord = clientCoord - rectCoord;
+        const logicalSize = isY ? (mainCanvas.height / (window.devicePixelRatio || 1)) : (mainCanvas.width / (window.devicePixelRatio || 1));
+        const visualSize = isY ? rect.height : rect.width;
+        return visualCoord * (logicalSize / visualSize);
+    };
     mainCanvas.onmousedown = (e) => {
         const rect = mainCanvas.getBoundingClientRect();
-        const width = mainCanvas.width / (window.devicePixelRatio || 1);
-        const height = mainCanvas.height / (window.devicePixelRatio || 1);
+        const uiScale = getUIScale();
+        const logicalWidth = mainCanvas.width / (window.devicePixelRatio || 1);
+        const logicalHeight = mainCanvas.height / (window.devicePixelRatio || 1);
+        const visualWidth = rect.width;
+        const visualHeight = rect.height;
         const zoomFactors = [0.25, 0.5, 0.75, 1.0, 2, 3, 4, 8];
         const zoom = zoomFactors[zoomLevel] || 1.0;
-        const x = (e.clientX - rect.left - width / 2 - panX) / zoom;
-        const y = (e.clientY - rect.top - height / 2 - panY) / zoom;
+        const adjustedX = adjustCoordinateForUIScale(e.clientX, rect.left, rect, false);
+        const adjustedY = adjustCoordinateForUIScale(e.clientY, rect.top, rect, true);
+        const x = (adjustedX - logicalWidth / 2 - panX) / zoom;
+        const y = (adjustedY - logicalHeight / 2 - panY) / zoom;
         if (e.button === 2) {
             isRightClickPanning = true;
             rightClickPanStartX = e.clientX;
@@ -5825,28 +7979,35 @@ window.addEventListener("load", async () => {
         }
         redraw();
     };
+    let mouseMoveThrottle = null;
     mainCanvas.onmousemove = (e) => {
         lastMouseX = e.clientX;
         lastMouseY = e.clientY;
+        if (mouseMoveThrottle) return;
+        mouseMoveThrottle = requestAnimationFrame(() => {
+            mouseMoveThrottle = null;
         const rect = mainCanvas.getBoundingClientRect();
-        const width = mainCanvas.width / (window.devicePixelRatio || 1);
-        const height = mainCanvas.height / (window.devicePixelRatio || 1);
+            const uiScale = getUIScale();
+            const logicalWidth = mainCanvas.width / (window.devicePixelRatio || 1);
+            const logicalHeight = mainCanvas.height / (window.devicePixelRatio || 1);
         const zoomFactors = [0.25, 0.5, 0.75, 1.0, 2, 3, 4, 8];
         const zoom = zoomFactors[zoomLevel] || 1.0;
-        const x = (e.clientX - rect.left - width / 2 - panX) / zoom;
-        const y = (e.clientY - rect.top - height / 2 - panY) / zoom;
+            const adjustedX = adjustCoordinateForUIScale(e.clientX, rect.left, rect, false);
+            const adjustedY = adjustCoordinateForUIScale(e.clientY, rect.top, rect, true);
+            const x = (adjustedX - logicalWidth / 2 - panX) / zoom;
+            const y = (adjustedY - logicalHeight / 2 - panY) / zoom;
         if (isRightClickPanning) {
             const deltaX = Math.abs(e.clientX - rightClickPanStartX);
             const deltaY = Math.abs(e.clientY - rightClickPanStartY);
             if (deltaX > dragThreshold || deltaY > dragThreshold) {
                 rightClickPanMoved = true;
             }
-            panX = rightClickPanStartPanX + (e.clientX - rightClickPanStartX);
-            panY = rightClickPanStartPanY + (e.clientY - rightClickPanStartY);
+                panX = rightClickPanStartPanX + (e.clientX - rightClickPanStartX) / uiScale;
+                panY = rightClickPanStartPanY + (e.clientY - rightClickPanStartY) / uiScale;
             redraw();
         } else if (isPanning) {
-            panX = e.clientX - panStartX;
-            panY = e.clientY - panStartY;
+                panX = (e.clientX - panStartX) / uiScale;
+                panY = (e.clientY - panStartY) / uiScale;
             redraw();
         } else if (isDragging && dragButton === "left" && dragOffset && dragStartMousePos) {
             const deltaX = x - dragStartMousePos.x;
@@ -5869,6 +8030,7 @@ window.addEventListener("load", async () => {
         } else if (insertPiece) {
             redraw();
         }
+        });
     };
     mainCanvas.onmouseup = (e) => {
         if (e.button === 2 && isRightClickPanning) {
@@ -5928,12 +8090,16 @@ window.addEventListener("load", async () => {
         }
         if (isBoxSelecting && boxSelectStart && e.button === 0) {
             const rect = mainCanvas.getBoundingClientRect();
-            const width = mainCanvas.width / (window.devicePixelRatio || 1);
-            const height = mainCanvas.height / (window.devicePixelRatio || 1);
+            const logicalWidth = mainCanvas.width / (window.devicePixelRatio || 1);
+            const logicalHeight = mainCanvas.height / (window.devicePixelRatio || 1);
+            const visualWidth = rect.width;
+            const visualHeight = rect.height;
             const zoomFactors = [0.25, 0.5, 0.75, 1.0, 2, 3, 4, 8];
             const zoom = zoomFactors[zoomLevel] || 1.0;
-            const x = (e.clientX - rect.left - width / 2 - panX) / zoom;
-            const y = (e.clientY - rect.top - height / 2 - panY) / zoom;
+            const adjustedX = adjustCoordinateForUIScale(e.clientX, rect.left, rect);
+            const adjustedY = adjustCoordinateForUIScale(e.clientY, rect.top, rect);
+            const x = (adjustedX - logicalWidth / 2 - panX) / zoom;
+            const y = (adjustedY - logicalHeight / 2 - panY) / zoom;
             const frame = currentAnimation.getFrame(currentFrame);
             if (frame) {
                 const actualDir = getDirIndex(currentDir);
@@ -5964,6 +8130,17 @@ window.addEventListener("load", async () => {
                         if (centerX >= minX && centerX <= maxX && centerY >= minY && centerY <= maxY) {
                             if (!selectedPieces.has(piece)) {
                                 selectedPieces.add(piece);
+                            }
+                        }
+                    }
+                    if (frame.sounds && frame.sounds.length > 0) {
+                        for (const sound of frame.sounds) {
+                            const centerX = sound.xoffset;
+                            const centerY = sound.yoffset;
+                            if (centerX >= minX && centerX <= maxX && centerY >= minY && centerY <= maxY) {
+                                if (!selectedPieces.has(sound)) {
+                                    selectedPieces.add(sound);
+                                }
                             }
                         }
                     }
@@ -6001,13 +8178,17 @@ window.addEventListener("load", async () => {
 
     function getTouchCoords(e) {
         const rect = mainCanvas.getBoundingClientRect();
-        const width = mainCanvas.width / (window.devicePixelRatio || 1);
-        const height = mainCanvas.height / (window.devicePixelRatio || 1);
+        const logicalWidth = mainCanvas.width / (window.devicePixelRatio || 1);
+        const logicalHeight = mainCanvas.height / (window.devicePixelRatio || 1);
+        const visualWidth = rect.width;
+        const visualHeight = rect.height;
         const zoomFactors = [0.25, 0.5, 0.75, 1.0, 2, 3, 4, 8];
         const zoom = zoomFactors[zoomLevel] || 1.0;
         const touch = e.touches[0] || e.changedTouches[0];
-        const x = (touch.clientX - rect.left - width / 2 - panX) / zoom;
-        const y = (touch.clientY - rect.top - height / 2 - panY) / zoom;
+        const adjustedX = adjustCoordinateForUIScale(touch.clientX, rect.left, rect, false);
+        const adjustedY = adjustCoordinateForUIScale(touch.clientY, rect.top, rect, true);
+        const x = (adjustedX - logicalWidth / 2 - panX) / zoom;
+        const y = (adjustedY - logicalHeight / 2 - panY) / zoom;
         return {x, y, clientX: touch.clientX, clientY: touch.clientY};
     }
 
@@ -6257,6 +8438,17 @@ window.addEventListener("load", async () => {
                         if (centerX >= minX && centerX <= maxX && centerY >= minY && centerY <= maxY) {
                             if (!selectedPieces.has(piece)) {
                                 selectedPieces.add(piece);
+                            }
+                        }
+                    }
+                    if (frame.sounds && frame.sounds.length > 0) {
+                        for (const sound of frame.sounds) {
+                            const centerX = sound.xoffset;
+                            const centerY = sound.yoffset;
+                            if (centerX >= minX && centerX <= maxX && centerY >= minY && centerY <= maxY) {
+                                if (!selectedPieces.has(sound)) {
+                                    selectedPieces.add(sound);
+                                }
                             }
                         }
                     }
@@ -6668,7 +8860,45 @@ function showSpritesListContextMenu(e) {
     setTimeout(() => document.addEventListener("click", closeMenu), 0);
 }
 
+function getColorSchemeColors() {
+    const scheme = localStorage.getItem("ganiEditorColorScheme") || "default";
+    if (scheme === "default") {
+        return {
+            panel: "#2b2b2b",
+            border: "#1a1a1a",
+            text: "#e0e0e0",
+            buttonBg: "#1a1a1a",
+            buttonText: "#ffffff",
+            buttonHover: "#2b2b2b",
+            buttonBorder: "#0a0a0a",
+            buttonBorderLight: "#404040"
+        };
+    }
+    const schemes = {
+        "fusion-light": { panel: "#ffffff", border: "#d0d0d0", text: "#1a1a1a", buttonBg: "#ffffff", buttonText: "#1a1a1a", buttonHover: "#f0f0f0", buttonBorder: "#d0d0d0", buttonBorderLight: "#e0e0e0" },
+        "fusion-dark": { panel: "#2d2d2d", border: "#0f0f0f", text: "#e8e8e8", buttonBg: "#2d2d2d", buttonText: "#e8e8e8", buttonHover: "#3d3d3d", buttonBorder: "#0f0f0f", buttonBorderLight: "#404040" },
+        "dark-style": { panel: "#252525", border: "#3c3c3c", text: "#cccccc", buttonBg: "#252525", buttonText: "#cccccc", buttonHover: "#3e3e3e", buttonBorder: "#3c3c3c", buttonBorderLight: "#4c4c4c" },
+        "dark-orange": { panel: "#3a2f2a", border: "#1a0f0a", text: "#ffaa55", buttonBg: "#3a2f2a", buttonText: "#ffaa55", buttonHover: "#4a3f3a", buttonBorder: "#1a0f0a", buttonBorderLight: "#5a4f4a" },
+        "aqua": { panel: "#1a2a2f", border: "#0a0a0a", text: "#55ffff", buttonBg: "#1a2a2f", buttonText: "#55ffff", buttonHover: "#2a3a3f", buttonBorder: "#0a0a0a", buttonBorderLight: "#2a4a4f" },
+        "elegant-dark": { panel: "#2d2d2d", border: "#404040", text: "#e8e8e8", buttonBg: "#2d2d2d", buttonText: "#e8e8e8", buttonHover: "#3d3d3d", buttonBorder: "#404040", buttonBorderLight: "#505050" },
+        "material-dark": { panel: "#1e1e1e", border: "#333333", text: "#ffffff", buttonBg: "#1e1e1e", buttonText: "#ffffff", buttonHover: "#2e2e2e", buttonBorder: "#333333", buttonBorderLight: "#444444" },
+        "light-style": { panel: "#ffffff", border: "#e0e0e0", text: "#000000", buttonBg: "#ffffff", buttonText: "#000000", buttonHover: "#f0f0f0", buttonBorder: "#e0e0e0", buttonBorderLight: "#f0f0f0" },
+        "ayu-mirage": { panel: "#232834", border: "#191e2a", text: "#cbccc6", buttonBg: "#232834", buttonText: "#cbccc6", buttonHover: "#2a2f3a", buttonBorder: "#191e2a", buttonBorderLight: "#2a3a4a" },
+        "dracula": { panel: "#343746", border: "#21222c", text: "#f8f8f2", buttonBg: "#343746", buttonText: "#f8f8f2", buttonHover: "#44475a", buttonBorder: "#21222c", buttonBorderLight: "#525460" }
+    };
+    return schemes[scheme] || schemes["default"];
+}
 function showConfirmDialog(message, callback) {
+    const colors = getColorSchemeColors();
+    const currentFont = localStorage.getItem("editorFont") || "chevyray";
+    let fontFamily = currentFont;
+    if (currentFont === "PressStart2P") fontFamily = '"PressStart2P", monospace';
+    else if (currentFont === "Silkscreen") fontFamily = '"Silkscreen", monospace';
+    else if (currentFont === "Tempus Sans ITC") fontFamily = '"Tempus Sans ITC", monospace';
+    else if (currentFont === "MesloLGS NF") fontFamily = '"MesloLGS NF", monospace';
+    else if (currentFont === "chevyray") fontFamily = '"chevyray", monospace';
+    else if (currentFont === "chevyrayOeuf") fontFamily = '"chevyrayOeuf", monospace';
+    else if (currentFont === "monospace") fontFamily = "monospace";
     const dialog = document.createElement("div");
     dialog.className = "dialog-overlay";
     dialog.style.display = "flex";
@@ -6682,17 +8912,24 @@ function showConfirmDialog(message, callback) {
     dialog.style.background = "rgba(0,0,0,0.7)";
     dialog.style.zIndex = "10001";
     const content = document.createElement("div");
-    content.style.background = "#444";
+    content.style.background = colors.panel;
     content.style.padding = "20px";
-    content.style.borderRadius = "5px";
+    content.style.borderRadius = "0";
+    content.style.border = "2px solid " + colors.border;
     content.style.width = "400px";
     content.style.maxWidth = "90vw";
     content.style.textAlign = "center";
+    content.style.boxShadow = "0 4px 12px rgba(0, 0, 0, 0.8)";
     const messageEl = document.createElement("div");
-    messageEl.style.color = "#eee";
+    messageEl.style.color = colors.text;
     messageEl.style.marginBottom = "20px";
-    messageEl.style.fontSize = "14px";
+    messageEl.style.fontSize = "12px";
+    messageEl.style.fontFamily = fontFamily;
     messageEl.style.whiteSpace = "pre-wrap";
+    messageEl.style.userSelect = "none";
+    messageEl.style.webkitUserSelect = "none";
+    messageEl.style.mozUserSelect = "none";
+    messageEl.style.msUserSelect = "none";
     messageEl.textContent = message;
     const buttonContainer = document.createElement("div");
     buttonContainer.style.display = "flex";
@@ -6700,25 +8937,41 @@ function showConfirmDialog(message, callback) {
     buttonContainer.style.justifyContent = "center";
     const yesButton = document.createElement("button");
     yesButton.textContent = "Yes";
-    yesButton.style.background = "#666";
-    yesButton.style.color = "#eee";
-    yesButton.style.border = "1px solid #777";
+    yesButton.style.background = colors.buttonBg;
+    yesButton.style.color = colors.buttonText;
+    yesButton.style.border = "1px solid " + colors.buttonBorder;
+    yesButton.style.borderTop = "1px solid " + colors.buttonBorderLight;
+    yesButton.style.borderLeft = "1px solid " + colors.buttonBorderLight;
     yesButton.style.padding = "8px 16px";
     yesButton.style.cursor = "pointer";
-    yesButton.style.borderRadius = "3px";
-    yesButton.onclick = () => {
+    yesButton.style.borderRadius = "0";
+    yesButton.style.fontFamily = fontFamily;
+    yesButton.style.fontSize = "12px";
+    yesButton.style.boxShadow = "inset 0 1px 0 rgba(0, 0, 0, 0.3), 0 1px 0 rgba(255, 255, 255, 0.1)";
+    yesButton.onmouseover = () => { yesButton.style.background = colors.buttonHover; yesButton.style.borderColor = colors.buttonBorderLight; };
+    yesButton.onmouseout = () => { yesButton.style.background = colors.buttonBg; yesButton.style.borderColor = colors.buttonBorder; yesButton.style.borderTop = "1px solid " + colors.buttonBorderLight; yesButton.style.borderLeft = "1px solid " + colors.buttonBorderLight; };
+    yesButton.onclick = (e) => {
+        e.stopPropagation();
         document.body.removeChild(dialog);
         callback(true);
     };
     const noButton = document.createElement("button");
     noButton.textContent = "No";
-    noButton.style.background = "#666";
-    noButton.style.color = "#eee";
-    noButton.style.border = "1px solid #777";
+    noButton.style.background = colors.buttonBg;
+    noButton.style.color = colors.buttonText;
+    noButton.style.border = "1px solid " + colors.buttonBorder;
+    noButton.style.borderTop = "1px solid " + colors.buttonBorderLight;
+    noButton.style.borderLeft = "1px solid " + colors.buttonBorderLight;
     noButton.style.padding = "8px 16px";
     noButton.style.cursor = "pointer";
-    noButton.style.borderRadius = "3px";
-    noButton.onclick = () => {
+    noButton.style.borderRadius = "0";
+    noButton.style.fontFamily = fontFamily;
+    noButton.style.fontSize = "12px";
+    noButton.style.boxShadow = "inset 0 1px 0 rgba(0, 0, 0, 0.3), 0 1px 0 rgba(255, 255, 255, 0.1)";
+    noButton.onmouseover = () => { noButton.style.background = colors.buttonHover; noButton.style.borderColor = colors.buttonBorderLight; };
+    noButton.onmouseout = () => { noButton.style.background = colors.buttonBg; noButton.style.borderColor = colors.buttonBorder; noButton.style.borderTop = "1px solid " + colors.buttonBorderLight; noButton.style.borderLeft = "1px solid " + colors.buttonBorderLight; };
+    noButton.onclick = (e) => {
+        e.stopPropagation();
         document.body.removeChild(dialog);
         callback(false);
     };
@@ -6731,6 +8984,8 @@ function showConfirmDialog(message, callback) {
 }
 
 function showAddSpriteDialog(editSprite = null) {
+    const currentFont = localStorage.getItem("editorFont") || "chevyray";
+    const fontFamily = getFontFamily(currentFont);
     const dialog = document.createElement("div");
     dialog.className = "dialog-overlay";
     dialog.style.display = "flex";
@@ -6744,9 +8999,31 @@ function showAddSpriteDialog(editSprite = null) {
     dialog.style.background = "rgba(0,0,0,0.7)";
     dialog.style.zIndex = "10000";
     const content = document.createElement("div");
-    content.style.background = "#444";
+    content.className = "add-sprite-dialog-content";
+    const currentScheme = localStorage.getItem("ganiEditorColorScheme") || "default";
+    let dialogColors = {panel: "#2b2b2b", border: "#0a0a0a", text: "#e0e0e0", inputBg: "#1a1a1a", buttonBg: "#2b2b2b", buttonText: "#e0e0e0", buttonHover: "#404040"};
+    if (currentScheme !== "default") {
+        const schemes = {
+            "fusion-light": {panel: "#ffffff", border: "#d0d0d0", text: "#1a1a1a", inputBg: "#ffffff", buttonBg: "#ffffff", buttonText: "#1a1a1a", buttonHover: "#f0f0f0"},
+            "fusion-dark": {panel: "#2d2d2d", border: "#0f0f0f", text: "#e8e8e8", inputBg: "#1e1e1e", buttonBg: "#2d2d2d", buttonText: "#e8e8e8", buttonHover: "#3d3d3d"},
+            "dark-style": {panel: "#252525", border: "#3c3c3c", text: "#cccccc", inputBg: "#1e1e1e", buttonBg: "#252525", buttonText: "#cccccc", buttonHover: "#3e3e3e"},
+            "dark-orange": {panel: "#3a2f2a", border: "#1a0f0a", text: "#ffaa55", inputBg: "#2a1f1a", buttonBg: "#3a2f2a", buttonText: "#ffaa55", buttonHover: "#4a3f3a"},
+            "aqua": {panel: "#1a2a2f", border: "#0a0a0a", text: "#55ffff", inputBg: "#0a1a1f", buttonBg: "#1a2a2f", buttonText: "#55ffff", buttonHover: "#2a3a3f"},
+            "elegant-dark": {panel: "#2d2d2d", border: "#404040", text: "#e8e8e8", inputBg: "#1a1a1a", buttonBg: "#2d2d2d", buttonText: "#e8e8e8", buttonHover: "#3d3d3d"},
+            "material-dark": {panel: "#1e1e1e", border: "#333333", text: "#ffffff", inputBg: "#121212", buttonBg: "#1e1e1e", buttonText: "#ffffff", buttonHover: "#2e2e2e"},
+            "light-style": {panel: "#ffffff", border: "#e0e0e0", text: "#000000", inputBg: "#ffffff", buttonBg: "#ffffff", buttonText: "#000000", buttonHover: "#f0f0f0"},
+            "ayu-mirage": {panel: "#232834", border: "#191e2a", text: "#cbccc6", inputBg: "#1f2430", buttonBg: "#232834", buttonText: "#cbccc6", buttonHover: "#2a2f3a"},
+            "dracula": {panel: "#343746", border: "#21222c", text: "#f8f8f2", inputBg: "#282a36", buttonBg: "#343746", buttonText: "#f8f8f2", buttonHover: "#44475a"}
+        };
+        if (schemes[currentScheme]) dialogColors = schemes[currentScheme];
+    }
+    content.style.background = dialogColors.panel;
     content.style.padding = "2px";
-    content.style.borderRadius = "5px";
+    content.style.borderRadius = "0";
+    content.style.border = `1px solid ${dialogColors.border}`;
+    content.style.borderTop = `1px solid ${dialogColors.border === "#0a0a0a" ? "#404040" : dialogColors.border}`;
+    content.style.borderLeft = `1px solid ${dialogColors.border === "#0a0a0a" ? "#404040" : dialogColors.border}`;
+    content.style.boxShadow = "inset 0 1px 0 rgba(0, 0, 0, 0.3), 0 2px 4px rgba(0, 0, 0, 0.5)";
     content.style.width = "700px";
     content.style.maxWidth = "90vw";
     content.style.height = "600px";
@@ -6754,6 +9031,8 @@ function showAddSpriteDialog(editSprite = null) {
     content.style.display = "flex";
     content.style.flexDirection = "column";
     content.style.overflow = "hidden";
+    content.style.fontFamily = fontFamily;
+    content.style.color = dialogColors.text;
     const splitter = document.createElement("div");
     splitter.style.display = "flex";
     splitter.style.flex = "1";
@@ -6771,6 +9050,8 @@ function showAddSpriteDialog(editSprite = null) {
     leftPanel.style.maxHeight = "100%";
     leftPanel.style.boxSizing = "border-box";
     leftPanel.style.flexShrink = "0";
+    leftPanel.style.background = dialogColors.panel;
+    leftPanel.style.color = dialogColors.text;
     const formLayout = document.createElement("div");
     formLayout.style.display = "flex";
     formLayout.style.flexDirection = "column";
@@ -6781,45 +9062,54 @@ function showAddSpriteDialog(editSprite = null) {
     row1.style.display = "flex";
     row1.style.alignItems = "center";
     row1.style.gap = "4px";
-    row1.innerHTML = `<label style="width:100px;font-size:15px;flex-shrink:0;">Image Source:</label><select id="addSpriteSource" style="flex:1;min-width:0;background:#555;color:#eee;border:1px solid #777;padding:2px;font-size:15px;"><option>CUSTOM</option><option>SPRITES</option><option>BODY</option><option>HEAD</option><option>SWORD</option><option>SHIELD</option><option>HORSE</option><option>PICS</option><option>ATTR1</option><option>ATTR2</option><option>ATTR3</option><option>ATTR4</option><option>ATTR5</option><option>ATTR6</option><option>ATTR7</option><option>ATTR8</option><option>ATTR9</option><option>ATTR10</option><option>PARAM1</option><option>PARAM2</option><option>PARAM3</option><option>PARAM4</option><option>PARAM5</option><option>PARAM6</option><option>PARAM7</option><option>PARAM8</option><option>PARAM9</option><option>PARAM10</option></select>`;
+    const borderTopLeft = dialogColors.border === "#0a0a0a" ? "#404040" : dialogColors.border;
+    row1.innerHTML = `<label style="width:100px;font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;">Image Source:</label><select id="addSpriteSource" style="flex:1;min-width:0;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><option>CUSTOM</option><option>SPRITES</option><option>BODY</option><option>HEAD</option><option>SWORD</option><option>SHIELD</option><option>HORSE</option><option>PICS</option><option>ATTR1</option><option>ATTR2</option><option>ATTR3</option><option>ATTR4</option><option>ATTR5</option><option>ATTR6</option><option>ATTR7</option><option>ATTR8</option><option>ATTR9</option><option>ATTR10</option><option>PARAM1</option><option>PARAM2</option><option>PARAM3</option><option>PARAM4</option><option>PARAM5</option><option>PARAM6</option><option>PARAM7</option><option>PARAM8</option><option>PARAM9</option><option>PARAM10</option></select>`;
     const row2 = document.createElement("div");
     row2.style.display = "flex";
     row2.style.alignItems = "center";
     row2.style.gap = "4px";
-    row2.innerHTML = `<label style="width:100px;font-size:15px;flex-shrink:0;">Image File:</label><input type="text" id="addSpriteImageFile" readonly style="flex:1;min-width:0;background:#555;color:#eee;border:1px solid #777;padding:2px;font-size:15px;"><button id="addSpriteBrowse" style="background:#666;color:#eee;border:1px solid #777;padding:2px 8px;cursor:pointer;font-size:15px;flex-shrink:0;">Select</button>`;
+    row2.innerHTML = `<label style="width:100px;font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;">Image File:</label><input type="text" id="addSpriteImageFile" readonly style="flex:1;min-width:0;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><button id="addSpriteBrowse" style="background:${dialogColors.buttonBg};color:${dialogColors.buttonText};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px 8px;cursor:pointer;font-size:12px;font-family:${fontFamily};flex-shrink:0;box-shadow:inset 0 1px 0 rgba(0,0,0,0.3),0 1px 0 rgba(255,255,255,0.1);">Select</button>`;
     const row3 = document.createElement("div");
     row3.style.display = "flex";
     row3.style.alignItems = "center";
     row3.style.gap = "4px";
-    row3.innerHTML = `<label style="width:100px;font-size:15px;flex-shrink:0;">Comment:</label><input type="text" id="addSpriteComment" value="New Sprite" style="flex:1;min-width:0;background:#555;color:#eee;border:1px solid #777;padding:2px;font-size:15px;">`;
+    row3.innerHTML = `<label style="width:100px;font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;">Comment:</label><input type="text" id="addSpriteComment" value="New Sprite" style="flex:1;min-width:0;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);">`;
     const row4 = document.createElement("div");
     row4.style.display = "flex";
     row4.style.alignItems = "center";
     row4.style.gap = "4px";
-    row4.innerHTML = `<label style="width:100px;font-size:15px;flex-shrink:0;">Sprite Index:</label><input type="number" id="addSpriteIndex" value="${currentAnimation.nextSpriteIndex}" style="flex:1;min-width:0;background:#555;color:#eee;border:1px solid #777;padding:2px;font-size:15px;">`;
+    row4.innerHTML = `<label style="width:100px;font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;">Sprite Index:</label><input type="number" id="addSpriteIndex" value="${currentAnimation.nextSpriteIndex}" style="flex:1;min-width:0;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);">`;
     const spriteSizeGroup = document.createElement("div");
-    spriteSizeGroup.style.border = "1px solid #555";
+    spriteSizeGroup.style.border = `1px solid ${dialogColors.border}`;
+    spriteSizeGroup.style.borderTop = `1px solid ${borderTopLeft}`;
+    spriteSizeGroup.style.borderLeft = `1px solid ${borderTopLeft}`;
     spriteSizeGroup.style.padding = "6px 2px 2px 2px";
     spriteSizeGroup.style.marginTop = "8px";
-    spriteSizeGroup.innerHTML = `<div style="font-weight:bold;font-size:15px;margin-bottom:4px;">Sprite Size</div>`;
+    spriteSizeGroup.style.background = dialogColors.panel;
+    spriteSizeGroup.style.boxShadow = "inset 0 1px 0 rgba(0,0,0,0.3)";
+    spriteSizeGroup.innerHTML = `<div style="font-weight:bold;font-size:12px;margin-bottom:4px;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;">Sprite Size</div>`;
     const sizeGrid = document.createElement("div");
     sizeGrid.style.display = "grid";
     sizeGrid.style.gridTemplateColumns = "auto 1fr";
     sizeGrid.style.gap = "4px 8px";
     sizeGrid.style.alignItems = "center";
-    sizeGrid.innerHTML = `<label style="font-size:15px;flex-shrink:0;">Left:</label><input type="number" id="addSpriteLeft" value="0" style="flex:1;min-width:0;background:#555;color:#eee;border:1px solid #777;padding:2px;font-size:15px;"><label style="font-size:15px;flex-shrink:0;">Top:</label><input type="number" id="addSpriteTop" value="0" style="flex:1;min-width:0;background:#555;color:#eee;border:1px solid #777;padding:2px;font-size:15px;"><label style="font-size:15px;flex-shrink:0;">Width:</label><input type="number" id="addSpriteWidth" value="32" style="flex:1;min-width:0;background:#555;color:#eee;border:1px solid #777;padding:2px;font-size:15px;"><label style="font-size:15px;flex-shrink:0;">Height:</label><input type="number" id="addSpriteHeight" value="32" style="flex:1;min-width:0;background:#555;color:#eee;border:1px solid #777;padding:2px;font-size:15px;"><div style="grid-column:1/-1;display:flex;gap:8px;align-items:center;justify-content:flex-end;"><button id="addSpriteAutoDetect" title="Auto Detect Sprite - Click to toggle, then click on image to detect sprite" style="background:#666;color:#eee;border:1px solid #777;padding:2px 6px;cursor:pointer;font-size:13px;"><i class="fas fa-magic"></i> Auto Detect Sprite</button></div>`;
+    sizeGrid.innerHTML = `<label style="font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;">Left:</label><input type="number" id="addSpriteLeft" value="0" style="width:100%;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><label style="font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;">Top:</label><input type="number" id="addSpriteTop" value="0" style="width:100%;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><label style="font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;">Width:</label><input type="number" id="addSpriteWidth" value="32" style="width:100%;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><label style="font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;">Height:</label><input type="number" id="addSpriteHeight" value="32" style="width:100%;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><div style="grid-column:1/-1;display:flex;gap:8px;align-items:center;justify-content:flex-end;"><button id="addSpriteAutoDetect" title="Auto Detect Sprite - Click to toggle, then click on image to detect sprite" style="background:${dialogColors.buttonBg};color:${dialogColors.buttonText};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px 8px;cursor:pointer;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3),0 1px 0 rgba(255,255,255,0.1);"><i class="fas fa-magic"></i> Auto Detect Sprite</button></div>`;
     spriteSizeGroup.appendChild(sizeGrid);
     const gridGroup = document.createElement("div");
-    gridGroup.style.border = "1px solid #555";
+    gridGroup.style.border = `1px solid ${dialogColors.border}`;
+    gridGroup.style.borderTop = `1px solid ${borderTopLeft}`;
+    gridGroup.style.borderLeft = `1px solid ${borderTopLeft}`;
     gridGroup.style.padding = "6px 2px 2px 2px";
     gridGroup.style.marginTop = "8px";
-    gridGroup.innerHTML = `<div style="font-weight:bold;font-size:15px;margin-bottom:4px;">Grid Settings</div>`;
+    gridGroup.style.background = dialogColors.panel;
+    gridGroup.style.boxShadow = "inset 0 1px 0 rgba(0,0,0,0.3)";
+    gridGroup.innerHTML = `<div style="font-weight:bold;font-size:12px;margin-bottom:4px;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;">Grid Settings</div>`;
     const gridLayout = document.createElement("div");
     gridLayout.style.display = "grid";
     gridLayout.style.gridTemplateColumns = "auto 1fr";
     gridLayout.style.gap = "4px 8px";
     gridLayout.style.alignItems = "center";
-    gridLayout.innerHTML = `<label style="font-size:15px;flex-shrink:0;">Columns:</label><input type="number" id="addSpriteCols" value="1" min="1" style="flex:1;min-width:0;background:#555;color:#eee;border:1px solid #777;padding:2px;font-size:15px;"><label style="font-size:15px;flex-shrink:0;">Column Separation:</label><input type="number" id="addSpriteColSep" value="0" style="flex:1;min-width:0;background:#555;color:#eee;border:1px solid #777;padding:2px;font-size:15px;"><label style="font-size:15px;flex-shrink:0;">Rows:</label><input type="number" id="addSpriteRows" value="1" min="1" style="flex:1;min-width:0;background:#555;color:#eee;border:1px solid #777;padding:2px;font-size:15px;"><label style="font-size:15px;flex-shrink:0;">Row Separation:</label><input type="number" id="addSpriteRowSep" value="0" style="flex:1;min-width:0;background:#555;color:#eee;border:1px solid #777;padding:2px;font-size:15px;">`;
+    gridLayout.innerHTML = `<label style="font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;">Columns:</label><input type="number" id="addSpriteCols" value="1" min="1" style="width:100%;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><label style="font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;">Column Separation:</label><input type="number" id="addSpriteColSep" value="0" style="width:100%;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><label style="font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;">Rows:</label><input type="number" id="addSpriteRows" value="1" min="1" style="width:100%;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><label style="font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;">Row Separation:</label><input type="number" id="addSpriteRowSep" value="0" style="width:100%;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);">`;
     gridGroup.appendChild(gridLayout);
     formLayout.appendChild(row1);
     formLayout.appendChild(row2);
@@ -6828,34 +9118,34 @@ function showAddSpriteDialog(editSprite = null) {
     formLayout.appendChild(spriteSizeGroup);
     formLayout.appendChild(gridGroup);
     leftPanel.appendChild(formLayout);
-    const splitterHandle = document.createElement("div");
-    splitterHandle.style.width = "2px";
-    splitterHandle.style.background = "#555";
-    splitterHandle.style.cursor = "ew-resize";
     const rightPanel = document.createElement("div");
     rightPanel.style.display = "flex";
     rightPanel.style.flexDirection = "column";
     rightPanel.style.flex = "1";
     rightPanel.style.padding = "4px";
     rightPanel.style.minWidth = "0";
+    rightPanel.style.background = dialogColors.panel;
+    rightPanel.style.color = dialogColors.text;
     const previewHeader = document.createElement("div");
     previewHeader.style.display = "flex";
     previewHeader.style.justifyContent = "space-between";
     previewHeader.style.alignItems = "center";
     previewHeader.style.marginBottom = "4px";
-    previewHeader.innerHTML = `<div style="font-weight:bold;font-size:15px;">Preview:</div><div style="display:flex;gap:4px;align-items:center;"><button id="addSpriteCenter" style="background:#666;color:#eee;border:1px solid #777;padding:2px 6px;cursor:pointer;font-size:15px;" title="Center View"><i class="fas fa-crosshairs"></i></button><button id="addSpriteZoomOut" style="background:#666;color:#eee;border:1px solid #777;padding:2px 6px;cursor:pointer;font-size:15px;">-</button><span id="addSpriteZoomLevel" style="font-size:15px;min-width:40px;text-align:center;">100%</span><button id="addSpriteZoomIn" style="background:#666;color:#eee;border:1px solid #777;padding:2px 6px;cursor:pointer;font-size:15px;">+</button></div>`;
+    previewHeader.innerHTML = `<div style="font-weight:bold;font-size:12px;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);">Preview:</div><div style="display:flex;gap:4px;align-items:center;"><button id="addSpriteCenter" style="background:${dialogColors.buttonBg};color:${dialogColors.buttonText};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px 8px;cursor:pointer;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3),0 1px 0 rgba(255,255,255,0.1);" title="Center View"><i class="fas fa-crosshairs"></i></button><button id="addSpriteZoomOut" style="background:${dialogColors.buttonBg};color:${dialogColors.buttonText};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px 8px;cursor:pointer;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3),0 1px 0 rgba(255,255,255,0.1);">-</button><span id="addSpriteZoomLevel" style="font-size:12px;min-width:40px;text-align:center;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);">100%</span><button id="addSpriteZoomIn" style="background:${dialogColors.buttonBg};color:${dialogColors.buttonText};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px 8px;cursor:pointer;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3),0 1px 0 rgba(255,255,255,0.1);">+</button></div>`;
     rightPanel.appendChild(previewHeader);
     const previewCanvas = document.createElement("canvas");
     previewCanvas.id = "addSpritePreview";
     previewCanvas.style.flex = "1";
-    previewCanvas.style.border = "1px solid #555";
-    previewCanvas.style.background = "#222";
+    previewCanvas.style.border = `1px solid ${dialogColors.border}`;
+    previewCanvas.style.borderTop = `1px solid ${dialogColors.border === "#0a0a0a" ? "#404040" : dialogColors.border}`;
+    previewCanvas.style.borderLeft = `1px solid ${dialogColors.border === "#0a0a0a" ? "#404040" : dialogColors.border}`;
+    previewCanvas.style.background = dialogColors.inputBg;
     previewCanvas.style.cursor = "default";
+    previewCanvas.style.boxShadow = "inset 0 1px 0 rgba(0,0,0,0.3)";
     previewCanvas.width = 300;
     previewCanvas.height = 400;
     rightPanel.appendChild(previewCanvas);
     splitter.appendChild(leftPanel);
-    splitter.appendChild(splitterHandle);
     splitter.appendChild(rightPanel);
     content.appendChild(splitter);
     const buttonBar = document.createElement("div");
@@ -6863,13 +9153,128 @@ function showAddSpriteDialog(editSprite = null) {
     buttonBar.style.justifyContent = "flex-end";
     buttonBar.style.gap = "4px";
     buttonBar.style.padding = "4px 8px";
-    buttonBar.innerHTML = `<button id="addSpriteAdd" style="background:#666;color:#eee;border:1px solid #777;padding:5px 10px;cursor:pointer;">Add</button><button id="addSpriteCancel" style="background:#666;color:#eee;border:1px solid #777;padding:5px 10px;cursor:pointer;">Close</button>`;
+    buttonBar.innerHTML = `<button id="addSpriteAdd" style="background:${dialogColors.buttonBg};color:${dialogColors.buttonText};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:5px 10px;cursor:pointer;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3),0 1px 0 rgba(255,255,255,0.1);">Add</button><button id="addSpriteCancel" style="background:${dialogColors.buttonBg};color:${dialogColors.buttonText};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:5px 10px;cursor:pointer;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3),0 1px 0 rgba(255,255,255,0.1);">Close</button>`;
     content.appendChild(buttonBar);
     dialog.appendChild(content);
     document.body.appendChild(dialog);
+    const addButton = document.getElementById("addSpriteAdd");
+    const cancelButton = document.getElementById("addSpriteCancel");
+    const browseButton = document.getElementById("addSpriteBrowse");
+    const centerButton = document.getElementById("addSpriteCenter");
+    const zoomOutButton = document.getElementById("addSpriteZoomOut");
+    const zoomInButton = document.getElementById("addSpriteZoomIn");
+    const autoDetectButton = document.getElementById("addSpriteAutoDetect");
+    const addHoverEffect = (btn) => {
+        btn.onmouseover = () => {
+            btn.style.background = dialogColors.buttonHover;
+            btn.style.borderColor = dialogColors.border;
+        };
+        btn.onmouseout = () => {
+            btn.style.background = dialogColors.buttonBg;
+            btn.style.borderColor = dialogColors.border;
+        };
+        btn.onmousedown = () => {
+            btn.style.background = dialogColors.inputBg;
+            btn.style.borderColor = dialogColors.border;
+            btn.style.boxShadow = "inset 0 1px 2px rgba(0,0,0,0.5)";
+        };
+        btn.onmouseup = () => {
+            btn.style.background = dialogColors.buttonHover;
+            btn.style.borderColor = dialogColors.border;
+            btn.style.boxShadow = "inset 0 1px 0 rgba(0,0,0,0.3),0 1px 0 rgba(255,255,255,0.1)";
+        };
+    };
+    if (addButton) addHoverEffect(addButton);
+    if (cancelButton) addHoverEffect(cancelButton);
+    if (browseButton) addHoverEffect(browseButton);
+    if (centerButton) addHoverEffect(centerButton);
+    if (zoomOutButton) addHoverEffect(zoomOutButton);
+    if (zoomInButton) addHoverEffect(zoomInButton);
+    if (autoDetectButton) addHoverEffect(autoDetectButton);
+    setTimeout(() => {
+        const numberInputs = dialog.querySelectorAll('input[type="number"]');
+        numberInputs.forEach(input => {
+            if (!input.parentElement.classList.contains('number-input-wrapper')) {
+                const wrapper = document.createElement('div');
+                wrapper.className = 'number-input-wrapper';
+                const parent = input.parentElement;
+                const parentDisplay = window.getComputedStyle(parent).display;
+                const isGrid = parentDisplay === 'grid';
+                const isFlex = parentDisplay === 'flex';
+                const isAddSpriteIndex = input.id === 'addSpriteIndex';
+                if (isGrid) {
+                    wrapper.style.width = '100%';
+                } else if (isFlex || isAddSpriteIndex) {
+                    wrapper.style.flex = '1';
+                    wrapper.style.minWidth = '0';
+                } else if (input.style.width === '100%') {
+                    wrapper.style.width = '100%';
+                } else {
+                    wrapper.style.width = '100%';
+                }
+                input.parentNode.insertBefore(wrapper, input);
+                wrapper.appendChild(input);
+                input.style.width = '100%';
+                const spinnerContainer = document.createElement('div');
+                spinnerContainer.className = 'number-spinner-container';
+                const spinnerUp = document.createElement('div');
+                spinnerUp.className = 'number-spinner number-spinner-up';
+                spinnerUp.innerHTML = '<span style="display: inline-block; transform: scaleX(1.4);">▲</span>';
+                spinnerUp.onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (input.disabled) return;
+                    const step = parseFloat(input.step) || 1;
+                    const max = input.max !== '' ? parseFloat(input.max) : null;
+                    let value = parseFloat(input.value) || 0;
+                    value += step;
+                    if (max !== null && value > max) value = max;
+                    input.value = value;
+                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                };
+                const spinnerDown = document.createElement('div');
+                spinnerDown.className = 'number-spinner number-spinner-down';
+                spinnerDown.innerHTML = '<span style="display: inline-block; transform: scaleX(1.4);">▼</span>';
+                spinnerDown.onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (input.disabled) return;
+                    const step = parseFloat(input.step) || 1;
+                    const min = input.min !== '' ? parseFloat(input.min) : null;
+                    let value = parseFloat(input.value) || 0;
+                    value -= step;
+                    if (min !== null && value < min) value = min;
+                    input.value = value;
+                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                };
+                const updateSpinnerState = () => {
+                    if (input.disabled) {
+                        spinnerUp.style.pointerEvents = 'none';
+                        spinnerUp.style.opacity = '0.5';
+                        spinnerDown.style.pointerEvents = 'none';
+                        spinnerDown.style.opacity = '0.5';
+                    } else {
+                        spinnerUp.style.pointerEvents = 'auto';
+                        spinnerUp.style.opacity = '1';
+                        spinnerDown.style.pointerEvents = 'auto';
+                        spinnerDown.style.opacity = '1';
+                    }
+                };
+                updateSpinnerState();
+                const inputObserver = new MutationObserver(updateSpinnerState);
+                inputObserver.observe(input, { attributes: true, attributeFilter: ['disabled'] });
+                spinnerContainer.appendChild(spinnerUp);
+                spinnerContainer.appendChild(spinnerDown);
+                wrapper.appendChild(spinnerContainer);
+                input.style.paddingRight = '72px';
+            }
+        });
+    }, 0);
     const fileInput = document.createElement("input");
     fileInput.type = "file";
-    fileInput.accept = "image/*";
+    fileInput.accept = "image/*,.mng";
     fileInput.style.display = "none";
     document.body.appendChild(fileInput);
     let previewImg = null;
@@ -6930,15 +9335,7 @@ function showAddSpriteDialog(editSprite = null) {
                 updateAddSpritePreview();
             } else {
                 try {
-                    const img = new Image();
-                    await new Promise((resolve, reject) => {
-                        img.onload = resolve;
-                    img.onerror = () => {
-                        reject(new Error(`Image ${defaultName} not found`));
-                    };
-                        img.src = `images/${defaultName}`;
-                    });
-                    imageLibrary.set(imgKey, img);
+                    const img = await loadImageFromUrl(`images/${defaultName}`, imgKey);
                     previewImg = img;
                     if (selectionBox.w === 0 || selectionBox.h === 0) {
                         selectionBox.w = 32;
@@ -7448,8 +9845,8 @@ function showAddSpriteDialog(editSprite = null) {
             btn.style.borderColor = "#6bb0ff";
             previewCanvas.style.cursor = "crosshair";
         } else {
-            btn.style.background = "#666";
-            btn.style.borderColor = "#777";
+            btn.style.background = "#2b2b2b";
+            btn.style.borderColor = "#0a0a0a";
             previewCanvas.style.cursor = "default";
         }
     };
@@ -7870,7 +10267,245 @@ function showColorPickerDialog(currentColor, callback) {
         };
     });
 }
-
-
-
-
+function setupContextMenus() {
+    const contextMenu = document.createElement("div");
+    contextMenu.className = "context-menu";
+    contextMenu.id = "panelContextMenu";
+    document.body.appendChild(contextMenu);
+    let currentTarget = null;
+    function createMenuItem(text, checked, onClick) {
+        const item = document.createElement("div");
+        item.className = "context-menu-item";
+        const checkbox = document.createElement("span");
+        checkbox.style.cssText = "display: inline-block; width: 16px; height: 16px; margin-right: 8px; text-align: center; border: 1px solid #555; background: #1a1a1a; vertical-align: middle; line-height: 14px; font-size: 12px;";
+        checkbox.textContent = checked ? "✓" : " ";
+        const label = document.createElement("span");
+        label.textContent = text;
+        item.appendChild(checkbox);
+        item.appendChild(label);
+        item.onclick = () => {
+            onClick();
+            contextMenu.style.display = "none";
+        };
+        return item;
+    }
+    function showContextMenu(e, target) {
+        e.preventDefault();
+        e.stopPropagation();
+        currentTarget = target;
+        const leftPanel = document.querySelector(".left-panel");
+        const rightPanel = document.querySelector(".right-panel");
+        const timelineContainer = document.querySelector(".timeline-container");
+        const timelineView = document.querySelector(".timeline-view");
+        const toolbar = document.querySelector(".toolbar");
+        const leftVisible = leftPanel && leftPanel.style.display !== "none" && leftPanel.style.visibility !== "hidden";
+        const rightVisible = rightPanel && rightPanel.style.display !== "none" && rightPanel.style.visibility !== "hidden";
+        let timelineVisible = localStorage.getItem("timelineVisible");
+        if (timelineVisible === null) {
+            timelineVisible = "true";
+            localStorage.setItem("timelineVisible", "true");
+        }
+        timelineVisible = timelineVisible !== "false";
+        let toolbarVisible = localStorage.getItem("toolbarVisible");
+        if (toolbarVisible === null) {
+            toolbarVisible = "true";
+            localStorage.setItem("toolbarVisible", "true");
+        }
+        toolbarVisible = toolbarVisible !== "false";
+        const toolbarDisplay = toolbar && toolbar.style.display !== "none" && toolbar.style.visibility !== "hidden";
+        contextMenu.innerHTML = "";
+        const toolbarItem = createMenuItem("Toolbar", toolbarDisplay && toolbarVisible, () => {
+            if (toolbar) {
+                const newVisible = !toolbarVisible;
+                if (newVisible) {
+                    toolbar.style.display = "flex";
+                    toolbar.style.visibility = "visible";
+                    toolbar.style.opacity = "1";
+                    localStorage.setItem("toolbarVisible", "true");
+                } else {
+                    toolbar.style.setProperty("display", "none", "important");
+                    toolbar.style.setProperty("visibility", "hidden", "important");
+                    toolbar.style.setProperty("opacity", "0", "important");
+                    localStorage.setItem("toolbarVisible", "false");
+                }
+            }
+        });
+        contextMenu.appendChild(toolbarItem);
+        const leftItem = createMenuItem("Left Panel", leftVisible, () => {
+            if (leftPanel) {
+                const newVisible = !leftVisible;
+                if (newVisible) {
+                    leftPanel.style.display = "flex";
+                    leftPanel.style.visibility = "visible";
+                    localStorage.setItem("leftPanelVisible", "true");
+                } else {
+                    leftPanel.style.display = "none";
+                    leftPanel.style.visibility = "hidden";
+                    localStorage.setItem("leftPanelVisible", "false");
+                }
+                resizeCanvas();
+            }
+        });
+        contextMenu.appendChild(leftItem);
+        const rightItem = createMenuItem("Right Panel", rightVisible, () => {
+            if (rightPanel) {
+                const newVisible = !rightVisible;
+                if (newVisible) {
+                    rightPanel.style.display = "flex";
+                    rightPanel.style.visibility = "visible";
+                    localStorage.setItem("rightPanelVisible", "true");
+                } else {
+                    rightPanel.style.display = "none";
+                    rightPanel.style.visibility = "hidden";
+                    localStorage.setItem("rightPanelVisible", "false");
+                }
+                resizeCanvas();
+            }
+        });
+        contextMenu.appendChild(rightItem);
+        const timelineItem = createMenuItem("Timeline", timelineVisible, () => {
+            if (timelineContainer) {
+                const canvasTimelineSplitter = document.getElementById("canvasTimelineSplitter");
+                const newVisible = !timelineVisible;
+                const mainSplitter = document.getElementById("mainSplitter");
+                if (newVisible) {
+                    timelineContainer.style.display = "flex";
+                    timelineContainer.style.visibility = "visible";
+                    timelineContainer.style.opacity = "1";
+                    timelineContainer.style.removeProperty("flex");
+                    timelineContainer.style.removeProperty("height");
+                    if (timelineView) {
+                        timelineView.style.display = "block";
+                        timelineView.style.visibility = "visible";
+                        timelineView.style.opacity = "1";
+                    }
+                    if (canvasTimelineSplitter) {
+                        canvasTimelineSplitter.style.display = "block";
+                        canvasTimelineSplitter.style.visibility = "visible";
+                        canvasTimelineSplitter.style.opacity = "1";
+                    }
+                    if (mainSplitter) {
+                        mainSplitter.style.height = "calc(100% - 222px)";
+                        mainSplitter.style.maxHeight = "calc(100% - 222px)";
+                    }
+                    localStorage.setItem("timelineVisible", "true");
+                    resizeCanvas();
+                    setTimeout(() => drawTimeline(), 100);
+                } else {
+                    timelineContainer.style.setProperty("display", "none", "important");
+                    timelineContainer.style.setProperty("visibility", "hidden", "important");
+                    timelineContainer.style.setProperty("opacity", "0", "important");
+                    timelineContainer.style.setProperty("flex", "0 0 0px", "important");
+                    timelineContainer.style.setProperty("height", "0px", "important");
+                    if (timelineView) {
+                        timelineView.style.setProperty("display", "none", "important");
+                        timelineView.style.setProperty("visibility", "hidden", "important");
+                        timelineView.style.setProperty("opacity", "0", "important");
+                    }
+                    if (canvasTimelineSplitter) {
+                        canvasTimelineSplitter.style.setProperty("display", "none", "important");
+                        canvasTimelineSplitter.style.setProperty("visibility", "hidden", "important");
+                        canvasTimelineSplitter.style.setProperty("opacity", "0", "important");
+                    }
+                    if (mainSplitter) {
+                        mainSplitter.style.height = "calc(100% - 0px)";
+                        mainSplitter.style.maxHeight = "calc(100% - 0px)";
+                    }
+                    localStorage.setItem("timelineVisible", "false");
+                    resizeCanvas();
+                }
+            }
+        });
+        contextMenu.appendChild(timelineItem);
+        contextMenu.style.left = e.pageX + "px";
+        contextMenu.style.top = e.pageY + "px";
+        contextMenu.style.display = "block";
+    }
+    function hideContextMenu() {
+        contextMenu.style.display = "none";
+        currentTarget = null;
+    }
+    const leftPanel = document.querySelector(".left-panel");
+    const rightPanel = document.querySelector(".right-panel");
+    const timelineContainer = document.querySelector(".timeline-container");
+    const toolbar = document.querySelector(".toolbar");
+    const tabsContainer = document.getElementById("tabsContainer");
+    if (leftPanel) {
+        leftPanel.addEventListener("contextmenu", (e) => showContextMenu(e, "left"));
+    }
+    if (rightPanel) {
+        rightPanel.addEventListener("contextmenu", (e) => showContextMenu(e, "right"));
+    }
+    if (timelineContainer) {
+        timelineContainer.addEventListener("contextmenu", (e) => showContextMenu(e, "timeline"));
+    }
+    if (toolbar) {
+        toolbar.addEventListener("contextmenu", (e) => {
+            if (!e.target.closest("button") && !e.target.closest("#colorSchemeDropdown")) {
+                showContextMenu(e, "toolbar");
+            }
+        });
+    }
+    if (tabsContainer) {
+        tabsContainer.addEventListener("contextmenu", (e) => {
+            if (!e.target.closest(".tab")) {
+                showContextMenu(e, "tabs");
+            }
+        });
+    }
+    document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" || e.key === "Esc") {
+            const settingsDialog = document.getElementById("settingsDialog");
+            const aboutDialog = document.getElementById("aboutDialog");
+            const hotkeysDialog = document.getElementById("hotkeysDialog");
+            const defaultGaniDialog = document.getElementById("defaultGaniDialog");
+            const colorSchemeDropdown = document.getElementById("colorSchemeDropdown");
+            const contextMenu = document.getElementById("panelContextMenu");
+            const contextMenus = document.querySelectorAll(".context-menu");
+            if (settingsDialog && settingsDialog.style.display === "flex") {
+                const settingsCancel = document.getElementById("settingsCancel");
+                if (settingsCancel && settingsCancel.onclick) {
+                    settingsCancel.onclick();
+                } else {
+                    settingsDialog.style.display = "none";
+                }
+            }
+            if (aboutDialog && aboutDialog.style.display === "flex") {
+                const aboutOK = document.getElementById("aboutOK");
+                if (aboutOK && aboutOK.onclick) {
+                    aboutOK.onclick();
+                } else {
+                    aboutDialog.style.display = "none";
+                }
+            }
+            if (hotkeysDialog && hotkeysDialog.style.display === "flex") {
+                const hotkeysOK = document.getElementById("hotkeysOK");
+                if (hotkeysOK && hotkeysOK.onclick) {
+                    hotkeysOK.onclick();
+                } else {
+                    hotkeysDialog.style.display = "none";
+                }
+            }
+            if (defaultGaniDialog && defaultGaniDialog.style.display === "flex") {
+                defaultGaniDialog.style.display = "none";
+            }
+            if (colorSchemeDropdown && colorSchemeDropdown.style.display === "block") {
+                colorSchemeDropdown.style.display = "none";
+            }
+            if (contextMenu && contextMenu.style.display === "block") {
+                contextMenu.style.display = "none";
+            }
+            contextMenus.forEach(menu => {
+                if (menu.style.display === "block") {
+                    menu.style.display = "none";
+                }
+            });
+        }
+    });
+    document.addEventListener("click", hideContextMenu);
+    document.addEventListener("contextmenu", (e) => {
+        if (!leftPanel?.contains(e.target) && !rightPanel?.contains(e.target) && !timelineContainer?.contains(e.target) && !toolbar?.contains(e.target) && !tabsContainer?.contains(e.target)) {
+            hideContextMenu();
+        }
+    });
+}

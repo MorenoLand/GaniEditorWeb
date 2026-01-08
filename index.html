@@ -9,13 +9,16 @@
     <style>
         .fas {
             display: inline-block;
-            width: 1em;
-            height: 1em;
+            width: 16px;
+            height: 16px;
             background-size: contain;
             background-repeat: no-repeat;
             background-position: center;
             vertical-align: middle;
             filter: brightness(0) invert(1);
+            image-rendering: pixelated;
+            image-rendering: -moz-crisp-edges;
+            image-rendering: crisp-edges;
         }
         .fa-file { background-image: url("icons/file.svg"); }
         .fa-folder-open { background-image: url("icons/folder-open.svg"); }
@@ -23,11 +26,13 @@
         .fa-save { background-image: url("icons/save.svg"); }
         .fa-folder { background-image: url("icons/folder.svg"); }
         .fa-palette { background-image: url("icons/palette.svg"); }
+        .fa-cog { background-image: url("icons/gear.svg"); }
         .fa-exchange-alt { background-image: url("icons/exchange-alt.svg"); }
         .fa-times { background-image: url("icons/times.svg"); }
         .fa-undo { background-image: url("icons/undo.svg"); }
         .fa-redo { background-image: url("icons/redo.svg"); }
         .fa-recycle { background-image: url("icons/recycle.svg"); }
+        .fa-info-circle { background-image: url("icons/circle-info.svg"); }
         .fa-plus { background-image: url("icons/plus.svg"); }
         .fa-file-import { background-image: url("icons/file-import.svg"); }
         .fa-copy { background-image: url("icons/copy.svg"); }
@@ -37,12 +42,29 @@
         .fa-arrow-right { background-image: url("icons/arrow-right.svg"); }
         .fa-layer-group { background-image: url("icons/layer-group.svg"); }
         .fa-crosshairs { background-image: url("icons/crosshairs.svg"); }
+        .fa-pencil { background-image: url("icons/pencil.svg"); }
         .fa-minus { background-image: url("icons/minus.svg"); }
         .fa-arrow-up { background-image: url("icons/arrow-up.svg"); }
         .fa-arrow-down { background-image: url("icons/arrow-down.svg"); }
         .fa-play { background-image: url("icons/play.svg"); }
         .fa-pause { background-image: url("icons/pause.svg"); }
         .fa-stop { background-image: url("icons/stop.svg"); }
+        .fa-magic { background-image: url("icons/magic.svg"); }
+        @font-face {
+            font-family: "Silkscreen";
+            src: url("fonts/Silkscreen-Regular.ttf") format("truetype");
+            font-weight: normal;
+        }
+        @font-face {
+            font-family: "Silkscreen";
+            src: url("fonts/Silkscreen-Bold.ttf") format("truetype");
+            font-weight: bold;
+        }
+        @font-face {
+            font-family: "PressStart2P";
+            src: url("fonts/PressStart2P-Regular.ttf") format("truetype");
+            font-weight: normal;
+        }
         @font-face {
             font-family: "Tempus Sans ITC";
             src: url("fonts/tempus-sans-itc.ttf") format("truetype");
@@ -51,17 +73,45 @@
         @font-face {
             font-family: "Tempus Sans ITC";
             src: url("fonts/tempus-sans-itc.ttf") format("truetype");
-            font-weight: bold;
+            font-weight: normal;
         }
-        * { margin: 0; padding: 0; box-sizing: border-box; }
+        @font-face {
+            font-family: "MesloLGS NF";
+            src: url("fonts/MesloLGS NF Regular.ttf") format("truetype");
+            font-weight: normal;
+        }
+        @font-face {
+            font-family: "chevyray";
+            src: url("fonts/chevyray.ttf") format("truetype");
+            font-weight: normal;
+        }
+        @font-face {
+            font-family: "chevyrayOeuf";
+            src: url("fonts/chevyrayOeuf.ttf") format("truetype");
+            font-weight: normal;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; image-rendering: pixelated; image-rendering: -moz-crisp-edges; image-rendering: crisp-edges; }
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+        .loading-favicon {
+            width: 32px;
+            height: 32px;
+            animation: spin 1s linear infinite;
+            image-rendering: pixelated;
+            flex-shrink: 0;
+        }
         body {
-            font-family: Arial, sans-serif;
-            background: #2b2b2b;
+            font-family: "chevyray", monospace;
+            background: #1a1a1a;
             color: #e0e0e0;
             overflow: hidden;
             height: 100vh;
             margin: 0;
             padding: 0;
+            font-size: 12px;
+            line-height: 1.5;
         }
         html {
             overflow: hidden;
@@ -82,44 +132,95 @@
             overflow: hidden;
         }
         .toolbar {
-            background: #353535;
-            border-bottom: 1px solid #1a1a1a;
-            padding: 2px;
+            background: #2b2b2b;
+            border-bottom: 1px solid #0a0a0a;
+            padding: 8px;
             display: flex;
-            gap: 2px;
+            gap: 4px;
+            box-shadow: 0 1px 0 rgba(255, 255, 255, 0.05);
+            position: relative;
+        }
+        #btnSaveAs {
+            display: none;
         }
         .toolbar button {
-            background: transparent;
-            border: none;
+            background: #353535;
+            border: 1px solid #0a0a0a;
+            border-top: 1px solid #404040;
+            border-left: 1px solid #404040;
             color: #e0e0e0;
-            padding: 4px 8px;
+            padding: 8px;
             cursor: pointer;
-            border-radius: 2px;
+            font-family: "chevyray", monospace;
+            font-size: 12px;
+            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3), 0 1px 0 rgba(255, 255, 255, 0.1);
         }
-        .toolbar button:hover { background: #404040; }
+        .toolbar button:hover { background: #404040; border-color: #555; }
+        .toolbar button:active { background: #2b2b2b; border-color: #0a0a0a; box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5); }
+        .color-scheme-item:hover {
+            background: #404040 !important;
+        }
+        .custom-dropdown-button,
+        .custom-dropdown-item {
+            user-select: none;
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+        }
+        .custom-dropdown-button:hover {
+            background: #404040 !important;
+            border-color: #555 !important;
+        }
+        .custom-dropdown-button:active {
+            background: #2b2b2b !important;
+            border-color: #0a0a0a !important;
+            box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5) !important;
+        }
+        .custom-dropdown-item:hover {
+            background: #404040 !important;
+        }
         .default-gani-item { user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none; }
         .default-gani-item:hover { background: #4472C4; }
         .default-gani-item.selected { background: #4472C4; }
         .tabs {
             background: #2b2b2b;
-            border-bottom: 1px solid #1a1a1a;
+            border-bottom: 1px solid #0a0a0a;
             display: flex;
             gap: 2px;
-            padding: 2px;
+            padding: 4px 4px 0 4px;
+            box-shadow: none;
         }
         .tab {
-            background: #353535;
-            border: 1px solid #1a1a1a;
-            padding: 4px 12px;
+            background: transparent;
+            border: 1px solid transparent;
+            border-bottom: none;
+            padding: 8px 16px;
             cursor: pointer;
             position: relative;
             user-select: none;
             -webkit-user-select: none;
             -moz-user-select: none;
             -ms-user-select: none;
+            font-family: "chevyray", monospace;
+            font-size: 12px;
+            color: #888;
+            box-shadow: none;
         }
-        .tab.active { background: #404040; }
-        .tab-close { margin-left: 8px; cursor: pointer; }
+        .tab:hover {
+            background: rgba(255, 255, 255, 0.05);
+            color: #ccc;
+        }
+        .tab.active {
+            background: #2b2b2b;
+            border: 1px solid #0a0a0a;
+            border-top: 1px solid #404040;
+            border-left: 1px solid #404040;
+            border-bottom: none;
+            color: #e0e0e0;
+            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3);
+            margin-bottom: -1px;
+        }
+        .tab-close { margin-left: 8px; cursor: pointer; font-size: 20px; font-weight: bold; }
         .content-area {
             flex: 1 1 0;
             display: flex;
@@ -135,11 +236,13 @@
         .splitter.horizontal { flex-direction: row; }
         .splitter.vertical { flex-direction: column; }
         .splitter-handle {
-            background: #1a1a1a;
+            background: #0a0a0a;
             cursor: col-resize;
             width: 4px;
             flex-shrink: 0;
             z-index: 10;
+            border-left: 1px solid #404040;
+            border-right: 1px solid #0a0a0a;
         }
         .splitter.vertical .splitter-handle {
             cursor: row-resize;
@@ -152,23 +255,30 @@
             background: #2b2b2b;
             min-width: 200px;
             z-index: 2;
+            border-right: 1px solid #0a0a0a;
         }
         .sprite-toolbar {
             display: flex;
-            gap: 2px;
-            padding: 2px;
+            gap: 4px;
+            padding: 8px;
             background: #353535;
+            border-bottom: 1px solid #0a0a0a;
         }
         .sprite-toolbar button {
-            background: transparent;
-            border: none;
+            background: #2b2b2b;
+            border: 1px solid #0a0a0a;
+            border-top: 1px solid #404040;
+            border-left: 1px solid #404040;
             color: #e0e0e0;
             padding: 4px;
             cursor: pointer;
-            width: 24px;
-            height: 24px;
+            width: 32px;
+            height: 32px;
+            font-family: "chevyray", monospace;
+            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3), 0 1px 0 rgba(255, 255, 255, 0.1);
         }
-        .sprite-toolbar button:hover { background: #404040; }
+        .sprite-toolbar button:hover { background: #404040; border-color: #555; }
+        .sprite-toolbar button:active { background: #1a1a1a; border-color: #0a0a0a; box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5); }
         .sprites-list {
             overflow-y: auto;
             padding: 4px;
@@ -178,16 +288,20 @@
         }
         .sprite-item {
             background: #353535;
-            border: 1px solid #1a1a1a;
-            padding: 4px;
+            border: 1px solid #0a0a0a;
+            border-top: 1px solid #404040;
+            border-left: 1px solid #404040;
+            padding: 8px;
             cursor: pointer;
             text-align: center;
             display: flex;
             flex-direction: column;
             align-items: center;
-            height: 95px;
+            justify-content: flex-start;
+            height: 105px;
+            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3);
         }
-        .sprite-item.selected { border-color: #00ff00; }
+        .sprite-item.selected { border-color: #00ff00; border-width: 2px; }
         .sprite-item canvas { 
             width: 100%; 
             height: auto; 
@@ -195,15 +309,21 @@
             max-height: 64px;
             object-fit: contain;
             flex-shrink: 0;
+            image-rendering: pixelated;
+            image-rendering: -moz-crisp-edges;
+            image-rendering: crisp-edges;
         }
         .sprite-item > div {
-            font-size: 10px;
-            margin-top: 2px;
-            line-height: 1;
+            font-size: 12px;
+            margin-top: 8px;
+            line-height: 1.5;
+            font-family: "chevyray", monospace;
+            color: #e0e0e0;
+            text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.8), 0 0 4px rgba(0, 0, 0, 0.5);
         }
         .sprite-edit-panel {
             background: #2b2b2b;
-            border-top: 1px solid #1a1a1a;
+            border-top: 1px solid #0a0a0a;
             overflow-y: auto;
             flex: 1;
             min-height: 200px;
@@ -213,28 +333,117 @@
         }
         .sprite-settings label {
             display: block;
-            margin-bottom: 4px;
+            margin-bottom: 8px;
             font-size: 12px;
+            font-family: "chevyray", monospace;
+            border: none;
+            border-bottom: none;
+            border-top: none;
+            box-shadow: none;
+        }
+        .sprite-settings label + .slider-group {
+            margin-top: 5px;
+            padding-top: 0;
+        }
+        .sprite-settings label:has(+ .slider-group) {
+            margin-bottom: 0;
         }
         .sprite-settings input,
         .sprite-settings select {
             width: 100%;
-            background: #353535;
-            border: 1px solid #1a1a1a;
+            background: #1a1a1a;
+            border: 1px solid #0a0a0a;
+            border-top: 1px solid #404040;
+            border-left: 1px solid #404040;
+            border-bottom: 1px solid #0a0a0a;
             color: #e0e0e0;
-            padding: 2px 4px;
+            padding: 8px;
             margin-bottom: 8px;
+            font-family: "chevyray", monospace;
+            font-size: 12px;
+            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3);
+        }
+        .sprite-settings input[type="range"] {
+            margin-bottom: 0;
+            border: none;
+        }
+        .sprite-settings .slider-group {
+            margin-top: 0;
+        }
+        .sprite-settings input:not([type="range"]) + .slider-group {
+            margin-top: -1px;
+        }
+        .sprite-settings input:not([type="range"]) {
+            border-bottom: 1px solid #0a0a0a;
+        }
+        .sprite-settings label + .slider-group {
+            margin-top: 5px;
+            padding-top: 0;
         }
         .sprite-settings .slider-group {
             display: flex;
+            flex-direction: column;
             gap: 4px;
-            align-items: center;
+            border: none;
+            border-top: none;
+            box-shadow: none;
+            background: transparent;
+            margin-top: 0;
+            padding-top: 0;
         }
         .sprite-settings .slider-group input[type="range"] {
             flex: 1;
+            background: transparent;
+            border: none;
+            border-top: none;
+            border-bottom: none;
+            height: 8px;
+            -webkit-appearance: none;
+            appearance: none;
+            cursor: pointer;
+            margin-top: 0;
+            padding-top: 0;
+        }
+        .sprite-settings .slider-group input[type="range"]::-webkit-slider-runnable-track {
+            background: transparent;
+            height: 8px;
+            box-shadow: inset 0px 2px 0px 0px #5B5B5B, inset 0px -2px 0px 0px #5B5B5B, inset -2px 0px 0px 0px #5B5B5B, inset 2px 0px 0px 0px #5B5B5B, 0px 2px 0px 0px #1E1E1E, 2px 0px 0px 0px #191919, -2px 0px 0px 0px #191919, 0px -2px 0px 0px #191919, 0px 4px 0px 0px rgba(25, 25, 25, .8);
+        }
+        .sprite-settings .slider-group input[type="range"]::-moz-range-track {
+            background: transparent;
+            height: 8px;
+            box-shadow: inset 0px 2px 0px 0px #5B5B5B, inset 0px -2px 0px 0px #5B5B5B, inset -2px 0px 0px 0px #5B5B5B, inset 2px 0px 0px 0px #5B5B5B, 0px 2px 0px 0px #1E1E1E, 2px 0px 0px 0px #191919, -2px 0px 0px 0px #191919, 0px -2px 0px 0px #191919, 0px 4px 0px 0px rgba(25, 25, 25, .8);
+        }
+        .sprite-settings .slider-group input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 16px;
+            height: 24px;
+            background: #2b2d31;
+            border: none;
+            cursor: pointer;
+            margin-top: -8px;
+            box-shadow: inset 0px 2px 0px 0px #5B5B5B, inset 0px -2px 0px 0px #5B5B5B, inset -2px 0px 0px 0px #5B5B5B, inset 2px 0px 0px 0px #5B5B5B, 0px 2px 0px 0px #1E1E1E, 2px 0px 0px 0px #191919, -2px 0px 0px 0px #191919, 0px -2px 0px 0px #191919, 0px 4px 0px 0px rgba(25, 25, 25, .8);
+        }
+        .sprite-settings .slider-group input[type="range"]::-moz-range-thumb {
+            width: 16px;
+            height: 24px;
+            background: #2b2d31;
+            border: 3px solid #404248;
+            cursor: pointer;
+            box-shadow: inset 0px 2px 0px 0px #5B5B5B, inset 0px -2px 0px 0px #5B5B5B, inset -2px 0px 0px 0px #5B5B5B, inset 2px 0px 0px 0px #5B5B5B, 0px 2px 0px 0px #1E1E1E, 2px 0px 0px 0px #191919, -2px 0px 0px 0px #191919, 0px -2px 0px 0px #191919, 0px 4px 0px 0px rgba(25, 25, 25, .8);
         }
         .sprite-settings .slider-group input[type="number"] {
-            width: 60px;
+            width: 100%;
+            height: 32px;
+            background: #1a1a1a;
+            border: 1px solid #0a0a0a;
+            border-top: 1px solid #404040;
+            border-left: 1px solid #404040;
+            padding: 8px;
+            font-family: "chevyray", monospace;
+            font-size: 12px;
+            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3);
         }
         .center-panel {
             flex: 1;
@@ -253,6 +462,7 @@
             z-index: 0 !important;
             overflow: hidden;
             background: #006400;
+            border-top: 1px solid #0a0a0a;
         }
         #mainCanvas {
             display: block;
@@ -294,20 +504,25 @@
             gap: 4px;
         }
         .canvas-controls button {
-            background: rgba(43, 43, 43, 0.8);
-            border: 1px solid #1a1a1a;
+            background: #353535;
+            border: 1px solid #0a0a0a;
+            border-top: 1px solid #404040;
+            border-left: 1px solid #404040;
             color: #e0e0e0;
-            padding: 4px 8px;
+            padding: 8px;
             cursor: pointer;
+            font-family: "chevyray", monospace;
+            font-size: 12px;
+            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3), 0 1px 0 rgba(255, 255, 255, 0.1);
         }
         .timeline-container {
             background: #2b2b2b;
-            border-top: 1px solid #1a1a1a;
-            padding: 2px 2px 0 2px;
-            height: 218px;
-            min-height: 180px;
+            border-top: 1px solid #0a0a0a;
+            padding: 8px 8px 0 8px;
+            height: 224px;
+            min-height: 192px;
             max-height: 400px;
-            flex: 0 0 218px;
+            flex: 0 0 224px;
             width: 100%;
             display: flex !important;
             flex-direction: column;
@@ -318,6 +533,7 @@
             overflow: hidden;
             box-sizing: border-box;
             align-items: stretch;
+            box-shadow: 0 -1px 0 rgba(255, 255, 255, 0.05);
         }
         .timeline-header {
             display: flex;
@@ -330,19 +546,57 @@
             min-height: 24px;
             max-height: 24px;
         }
-        .timeline-header label { font-size: 12px; }
-        .timeline-header .frame-count { min-width: 40px; }
+        .timeline-header label { font-size: 12px; font-family: "chevyray", monospace; }
+        .timeline-header span { font-size: 12px; font-family: "chevyray", monospace; }
+        .timeline-header .frame-count { min-width: 40px; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none; }
         .timeline-slider {
             width: 100%;
             max-width: 91%;
-            margin-bottom: 4px;
+            margin-bottom: 8px;
             flex-shrink: 0;
+            background: transparent;
+            border: none;
+            height: 8px;
+            -webkit-appearance: none;
+            appearance: none;
+            cursor: pointer;
+        }
+        .timeline-slider::-webkit-slider-runnable-track {
+            background: transparent;
+            height: 8px;
+            box-shadow: inset 0px 2px 0px 0px #5B5B5B, inset 0px -2px 0px 0px #5B5B5B, inset -2px 0px 0px 0px #5B5B5B, inset 2px 0px 0px 0px #5B5B5B, 0px 2px 0px 0px #1E1E1E, 2px 0px 0px 0px #191919, -2px 0px 0px 0px #191919, 0px -2px 0px 0px #191919, 0px 4px 0px 0px rgba(25, 25, 25, .8);
+        }
+        .timeline-slider::-moz-range-track {
+            background: transparent;
+            height: 8px;
+            box-shadow: inset 0px 2px 0px 0px #5B5B5B, inset 0px -2px 0px 0px #5B5B5B, inset -2px 0px 0px 0px #5B5B5B, inset 2px 0px 0px 0px #5B5B5B, 0px 2px 0px 0px #1E1E1E, 2px 0px 0px 0px #191919, -2px 0px 0px 0px #191919, 0px -2px 0px 0px #191919, 0px 4px 0px 0px rgba(25, 25, 25, .8);
+        }
+        .timeline-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 16px;
+            height: 24px;
+            background: #2b2d31;
+            border: none;
+            cursor: pointer;
+            margin-top: -8px;
+            box-shadow: inset 0px 2px 0px 0px #5B5B5B, inset 0px -2px 0px 0px #5B5B5B, inset -2px 0px 0px 0px #5B5B5B, inset 2px 0px 0px 0px #5B5B5B, 0px 2px 0px 0px #1E1E1E, 2px 0px 0px 0px #191919, -2px 0px 0px 0px #191919, 0px -2px 0px 0px #191919, 0px 4px 0px 0px rgba(25, 25, 25, .8);
+        }
+        .timeline-slider::-moz-range-thumb {
+            width: 16px;
+            height: 24px;
+            background: #2b2d31;
+            border: 3px solid #404248;
+            cursor: pointer;
+            box-shadow: inset 0px 2px 0px 0px #5B5B5B, inset 0px -2px 0px 0px #5B5B5B, inset -2px 0px 0px 0px #5B5B5B, inset 2px 0px 0px 0px #5B5B5B, 0px 2px 0px 0px #1E1E1E, 2px 0px 0px 0px #191919, -2px 0px 0px 0px #191919, 0px -2px 0px 0px #191919, 0px 4px 0px 0px rgba(25, 25, 25, .8);
         }
         .timeline-view {
             flex: 1 1 0;
             min-height: 50px;
             background: #353535;
-            border: 1px solid #1a1a1a;
+            border: 1px solid #0a0a0a;
+            border-top: 1px solid #404040;
+            border-left: 1px solid #404040;
             position: relative;
             overflow: hidden;
             width: 100%;
@@ -350,6 +604,7 @@
             visibility: visible !important;
             opacity: 1 !important;
             box-sizing: border-box;
+            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3);
         }
         #timelineCanvas {
             display: block !important;
@@ -363,8 +618,9 @@
         }
         .playback-controls {
             display: flex !important;
-            gap: 2px;
-            padding: 4px;
+            gap: 4px;
+            padding: 8px;
+            padding-bottom: 34px;
             background: #353535;
             flex: 0 0 32px;
             height: 32px;
@@ -373,7 +629,7 @@
             width: 100%;
             position: relative;
             z-index: 100;
-            border-top: 1px solid #1a1a1a;
+            border-top: 1px solid #0a0a0a;
             visibility: visible !important;
             opacity: 1 !important;
             box-sizing: border-box;
@@ -381,13 +637,15 @@
             flex-grow: 0;
         }
         .playback-controls button {
-            background: transparent;
-            border: none;
+            background: #2b2b2b;
+            border: 1px solid #0a0a0a;
+            border-top: 1px solid #404040;
+            border-left: 1px solid #404040;
             color: #e0e0e0;
             padding: 4px;
             cursor: pointer;
-            width: 24px;
-            height: 24px;
+            width: 32px;
+            height: 32px;
             display: flex;
             align-items: center;
             justify-content: center;
@@ -397,8 +655,11 @@
             box-sizing: border-box;
             margin: 0;
             outline: none;
+            font-family: "chevyray", monospace;
+            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3), 0 1px 0 rgba(255, 255, 255, 0.1);
         }
-        .playback-controls button:hover { background: #404040; }
+        .playback-controls button:hover { background: #404040; border-color: #555; }
+        .playback-controls button:active { background: #1a1a1a; border-color: #0a0a0a; box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5); }
         .right-panel {
             display: flex;
             flex-direction: column;
@@ -406,125 +667,331 @@
             min-width: 200px;
             overflow-y: auto;
             z-index: 2;
+            border-left: 1px solid #0a0a0a;
         }
         .direction-selector {
-            padding: 4px;
+            padding: 8px;
             display: flex;
-            gap: 4px;
+            gap: 8px;
             align-items: center;
             background: #353535;
+            border-bottom: 1px solid #0a0a0a;
         }
-        .direction-selector label { font-size: 12px; }
+        .direction-selector label { font-size: 12px; font-family: "chevyray", monospace; }
         .direction-selector select {
             flex: 1;
-            background: #2b2b2b;
-            border: 1px solid #1a1a1a;
+            background: #1a1a1a;
+            border: 1px solid #0a0a0a;
+            border-top: 1px solid #404040;
+            border-left: 1px solid #404040;
             color: #e0e0e0;
-            padding: 2px 4px;
+            padding: 8px;
+            font-family: "chevyray", monospace;
+            font-size: 12px;
+            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3);
         }
         .settings-group {
-            border: 1px solid #1a1a1a;
-            margin: 4px;
+            border: 1px solid #0a0a0a;
+            border-top: 1px solid #404040;
+            border-left: 1px solid #404040;
+            margin: 8px;
             padding: 8px;
+            background: #2b2b2b;
+            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3);
         }
         .settings-group h3 {
             font-size: 12px;
             margin-bottom: 8px;
             color: #e0e0e0;
+            font-family: "chevyray", monospace;
         }
         .settings-group label {
             display: block;
-            font-size: 11px;
-            margin-bottom: 4px;
+            font-size: 12px;
+            margin-bottom: 8px;
+            font-family: "chevyray", monospace;
         }
         .settings-group input[type="checkbox"] {
             margin-right: 4px;
         }
         .settings-group input[type="text"],
-        .settings-group input[type="number"] {
+        .settings-group input[type="number"],
+        #settingsUIScaleNumber {
             width: 100%;
-            background: #353535;
-            border: 1px solid #1a1a1a;
+            background: #1a1a1a;
+            border: 1px solid #0a0a0a;
+            border-top: 1px solid #404040;
+            border-left: 1px solid #404040;
             color: #e0e0e0;
-            padding: 2px 4px;
+            padding: 8px;
             margin-bottom: 8px;
+            font-family: "chevyray", monospace;
+            font-size: 12px;
+            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3);
+        }
+        #settingsUIScaleNumber {
+            margin-bottom: 0;
+            margin-top: 10px;
+            padding: 6px;
+        }
+        #settingsDialog .number-input-wrapper .number-spinner-container {
+            top: 10px;
+        }
+        .settings-group select {
+            width: 100%;
+            background: #1a1a1a;
+            border: 1px solid #0a0a0a;
+            border-top: 1px solid #404040;
+            border-left: 1px solid #404040;
+            color: #ffffff;
+            padding: 8px;
+            margin-bottom: 8px;
+            font-family: "chevyray", monospace;
+            font-size: 12px;
+            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3);
+        }
+        .settings-group button {
+            background: #1a1a1a;
+            border: 1px solid #0a0a0a;
+            border-top: 1px solid #404040;
+            border-left: 1px solid #404040;
+            color: #ffffff;
+            padding: 8px;
+            cursor: pointer;
+            font-family: "chevyray", monospace;
+            font-size: 12px;
+            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3), 0 1px 0 rgba(255, 255, 255, 0.1);
+        }
+        .settings-group button:hover,
+        #settingsOK:hover,
+        #settingsCancel:hover,
+        #settingsDefaults:hover,
+        #settingsReset:hover,
+        #aboutOK:hover {
+            background: #2b2b2b !important;
+            border-color: #555 !important;
+        }
+        .settings-group button:active,
+        #settingsOK:active,
+        #settingsCancel:active,
+        #settingsDefaults:active,
+        #settingsReset:active,
+        #aboutOK:active {
+            background: #0a0a0a !important;
+            border-color: #0a0a0a !important;
+            box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5) !important;
+        }
+        #settingsDialog .dialog-content {
+            overflow: hidden !important;
+        }
+        #settingsDialog .dialog-content > div:last-child {
+            overflow: visible !important;
+        }
+        #settingsDialog button:not(#settingsDefaults):not(#settingsReset):not(#settingsCancel):not(#settingsOK) {
+            max-width: 100%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        #settingsDefaults, #settingsReset, #settingsCancel, #settingsOK {
+            overflow: visible !important;
+            text-overflow: clip !important;
+            max-width: none !important;
+            height: auto !important;
+            align-self: flex-start !important;
+            line-height: normal !important;
         }
         .defaults-table {
             width: 100%;
             border-collapse: collapse;
-            font-size: 11px;
+            font-size: 12px;
+            font-family: "chevyray", monospace;
         }
         .defaults-table th,
         .defaults-table td {
-            border: 1px solid #1a1a1a;
-            padding: 2px 4px;
+            border: 1px solid #0a0a0a;
+            padding: 8px;
             text-align: left;
         }
         .defaults-table th {
             background: #353535;
+            border-top: 1px solid #404040;
+            border-left: 1px solid #404040;
         }
         .defaults-table input {
             width: 100%;
-            background: #2b2b2b;
+            background: #1a1a1a;
             border: none;
             color: #e0e0e0;
-            padding: 2px;
+            padding: 8px;
+            font-family: "chevyray", monospace;
+            font-size: 12px;
         }
         .item-settings {
             padding: 8px;
         }
         .item-settings label {
             display: block;
-            font-size: 11px;
-            margin-bottom: 4px;
+            font-size: 12px;
+            margin-bottom: 8px;
+            font-family: "chevyray", monospace;
+            border: none;
+            border-bottom: none;
+            border-top: none;
+            box-shadow: none;
+        }
+        .item-settings label + .slider-group {
+            margin-top: -8px;
+            padding-top: 0;
         }
         .item-settings input {
             width: 100%;
-            background: #353535;
-            border: 1px solid #1a1a1a;
+            background: #1a1a1a;
+            border: 1px solid #0a0a0a;
+            border-top: 1px solid #404040;
+            border-left: 1px solid #404040;
+            border-bottom: 1px solid #0a0a0a;
             color: #e0e0e0;
-            padding: 2px 4px;
+            padding: 8px;
             margin-bottom: 8px;
+            font-family: "chevyray", monospace;
+            font-size: 12px;
+            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3);
+        }
+        .item-settings input[type="range"] {
+            margin-bottom: 0;
+            border: none;
+        }
+        .item-settings .slider-group {
+            margin-top: 0;
+        }
+        .item-settings input:not([type="range"]) + .slider-group {
+            margin-top: -1px;
+        }
+        .item-settings .slider-group input[type="range"] {
+            flex: 1;
+            background: transparent;
+            border: none;
+            border-top: none;
+            border-bottom: none;
+            height: 8px;
+            -webkit-appearance: none;
+            appearance: none;
+            cursor: pointer;
+            margin-top: 0;
+            padding-top: 0;
+        }
+        .item-settings .slider-group input[type="range"]::-webkit-slider-runnable-track {
+            background: transparent;
+            height: 8px;
+            box-shadow: inset 0px 2px 0px 0px #5B5B5B, inset 0px -2px 0px 0px #5B5B5B, inset -2px 0px 0px 0px #5B5B5B, inset 2px 0px 0px 0px #5B5B5B, 0px 2px 0px 0px #1E1E1E, 2px 0px 0px 0px #191919, -2px 0px 0px 0px #191919, 0px -2px 0px 0px #191919, 0px 4px 0px 0px rgba(25, 25, 25, .8);
+        }
+        .item-settings .slider-group input[type="range"]::-moz-range-track {
+            background: transparent;
+            height: 8px;
+            box-shadow: inset 0px 2px 0px 0px #5B5B5B, inset 0px -2px 0px 0px #5B5B5B, inset -2px 0px 0px 0px #5B5B5B, inset 2px 0px 0px 0px #5B5B5B, 0px 2px 0px 0px #1E1E1E, 2px 0px 0px 0px #191919, -2px 0px 0px 0px #191919, 0px -2px 0px 0px #191919, 0px 4px 0px 0px rgba(25, 25, 25, .8);
+        }
+        .item-settings .slider-group input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 16px;
+            height: 24px;
+            background: #2b2d31;
+            border: none;
+            cursor: pointer;
+            margin-top: -8px;
+            box-shadow: inset 0px 2px 0px 0px #5B5B5B, inset 0px -2px 0px 0px #5B5B5B, inset -2px 0px 0px 0px #5B5B5B, inset 2px 0px 0px 0px #5B5B5B, 0px 2px 0px 0px #1E1E1E, 2px 0px 0px 0px #191919, -2px 0px 0px 0px #191919, 0px -2px 0px 0px #191919, 0px 4px 0px 0px rgba(25, 25, 25, .8);
+        }
+        .item-settings .slider-group input[type="range"]::-moz-range-thumb {
+            width: 16px;
+            height: 24px;
+            background: #2b2d31;
+            border: 3px solid #404248;
+            cursor: pointer;
+            box-shadow: inset 0px 2px 0px 0px #5B5B5B, inset 0px -2px 0px 0px #5B5B5B, inset -2px 0px 0px 0px #5B5B5B, inset 2px 0px 0px 0px #5B5B5B, 0px 2px 0px 0px #1E1E1E, 2px 0px 0px 0px #191919, -2px 0px 0px 0px #191919, 0px -2px 0px 0px #191919, 0px 4px 0px 0px rgba(25, 25, 25, .8);
+        }
+        .item-settings .slider-group {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            border: none;
+            border-top: none;
+            box-shadow: none;
+            background: transparent;
+            margin-top: 0;
+            padding-top: 0;
+        }
+        .item-settings .slider-group input[type="number"] {
+            width: 100% !important;
+            height: 32px;
+            background: #1a1a1a;
+            border: 1px solid #0a0a0a;
+            border-top: 1px solid #404040;
+            border-left: 1px solid #404040;
+            padding: 8px;
+            font-family: "chevyray", monospace;
+            font-size: 12px;
+            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3);
+        }
+        .item-settings .slider-group .number-input-wrapper {
+            width: 100% !important;
         }
         .item-controls {
-            display: flex;
+            display: none;
             gap: 2px;
             margin-bottom: 8px;
+            margin-left: -4px;
         }
         .item-controls button {
             background: #353535;
-            border: 1px solid #1a1a1a;
+            border: 1px solid #0a0a0a;
+            border-top: 1px solid #404040;
+            border-left: 1px solid #404040;
             color: #e0e0e0;
-            padding: 4px;
+            padding: 8px;
             cursor: pointer;
             flex: 1;
+            font-family: "chevyray", monospace;
+            font-size: 12px;
+            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3), 0 1px 0 rgba(255, 255, 255, 0.1);
         }
-        .item-controls button:hover { background: #404040; }
+        .item-controls button:hover { background: #404040; border-color: #555; }
+        .item-controls button:active { background: #1a1a1a; border-color: #0a0a0a; box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5); }
         .sounds-list {
             list-style: none;
             padding: 0;
         }
         .sounds-list li {
-            padding: 4px;
+            padding: 8px;
             background: #353535;
-            border: 1px solid #1a1a1a;
-            margin-bottom: 2px;
+            border: 1px solid #0a0a0a;
+            border-top: 1px solid #404040;
+            border-left: 1px solid #404040;
+            margin-bottom: 4px;
             display: flex;
             align-items: center;
-            gap: 4px;
+            gap: 8px;
+            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3);
         }
         .sounds-list li input {
             flex: 1;
-            background: #2b2b2b;
-            border: 1px solid #1a1a1a;
+            background: #1a1a1a;
+            border: 1px solid #0a0a0a;
+            border-top: 1px solid #404040;
+            border-left: 1px solid #404040;
             color: #e0e0e0;
-            padding: 2px 4px;
+            padding: 8px;
+            font-family: "chevyray", monospace;
+            font-size: 12px;
+            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3);
         }
         .sprite-preview {
             width: 100%;
             height: 200px;
             background: #353535;
-            border: 1px solid #1a1a1a;
+            border: 1px solid #0a0a0a;
+            border-top: 1px solid #404040;
+            border-left: 1px solid #404040;
+            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3);
         }
         #spritePreviewCanvas {
             display: block;
@@ -567,6 +1034,10 @@
             }
             .timeline-header #totalDuration {
                 flex-shrink: 0 !important;
+                user-select: none !important;
+                -webkit-user-select: none !important;
+                -moz-user-select: none !important;
+                -ms-user-select: none !important;
             }
             .timeline-slider {
                 flex: 1 1 auto !important;
@@ -655,26 +1126,17 @@
             }
         }
         button:active {
-            background: #404040 !important;
-            opacity: 0.8;
+            background: #1a1a1a !important;
+            border-color: #0a0a0a !important;
+            box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5) !important;
             box-sizing: border-box !important;
             outline: none !important;
-            border: none !important;
         }
-        .toolbar button:active {
-            background: #404040 !important;
-        }
-        .sprite-toolbar button:active {
-            background: #404040 !important;
-        }
-        .playback-controls button:active {
-            background: #404040 !important;
-            box-sizing: border-box !important;
-            border: none !important;
-            outline: none !important;
-        }
+        .canvas-controls button:hover { background: #404040; border-color: #555; }
         .canvas-controls button:active {
-            background: rgba(0, 0, 0, 0.9) !important;
+            background: #1a1a1a !important;
+            border-color: #0a0a0a !important;
+            box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5) !important;
         }
         #mainCanvas {
             touch-action: none;
@@ -693,6 +1155,202 @@
         }
         button, input, select {
             touch-action: manipulation;
+            font-family: "chevyray", monospace;
+        }
+        button {
+            font-size: 12px;
+        }
+        input[type="text"], input[type="number"], select {
+            font-size: 12px;
+        }
+        input[type="number"] {
+            -moz-appearance: textfield;
+            appearance: textfield;
+            padding-right: 72px;
+        }
+        input[type="number"]::-webkit-inner-spin-button,
+        input[type="number"]::-webkit-outer-spin-button {
+            -webkit-appearance: none;
+            appearance: none;
+            display: none;
+        }
+        .number-input-wrapper {
+            position: relative;
+            display: block;
+            width: 100%;
+        }
+        .number-spinner {
+            position: absolute;
+            right: 2px;
+            top: -3px;
+            width: 32px;
+            height: calc(50% - 1px);
+            background: none;
+            border: none;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            color: #e0e0e0;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        .number-spinner {
+            letter-spacing: 2px;
+        }
+        .context-menu {
+            position: fixed;
+            background: #2b2b2b;
+            border: 1px solid #0a0a0a;
+            border-top: 1px solid #404040;
+            border-left: 1px solid #404040;
+            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3), 0 2px 4px rgba(0, 0, 0, 0.5);
+            padding: 4px 0;
+            z-index: 10000;
+            min-width: 180px;
+            font-family: "chevyray", monospace;
+            font-size: 12px;
+            display: none;
+        }
+        .context-menu-item {
+            padding: 8px 16px;
+            color: #e0e0e0;
+            cursor: pointer;
+            user-select: none;
+            -webkit-user-select: none;
+            display: flex;
+            align-items: center;
+        }
+        .context-menu-item:hover {
+            background: #404040;
+        }
+        .context-menu-item.disabled {
+            color: #666;
+            cursor: default;
+        }
+        .context-menu-item.disabled:hover {
+            background: transparent;
+        }
+        .number-spinner:hover {
+            color: #ffffff;
+        }
+        .number-spinner:active {
+            color: #cccccc;
+        }
+        .number-spinner-up {
+            border-bottom: none;
+        }
+        .number-spinner-down {
+            top: auto;
+            bottom: 1px;
+            border-top: none;
+        }
+        .number-spinner-container {
+            position: absolute;
+            right: 2px;
+            top: -3px;
+            bottom: 1px;
+            width: 68px;
+            display: flex;
+            flex-direction: row;
+            gap: 2px;
+        }
+        .add-sprite-dialog-content .number-spinner-container {
+            top: 2px;
+        }
+        .add-sprite-dialog-content .number-input-wrapper {
+            display: flex;
+        }
+        .add-sprite-dialog-content .number-input-wrapper[style*="flex: 1"],
+        .add-sprite-dialog-content .number-input-wrapper[style*="flex:1"] {
+            flex: 1 !important;
+            min-width: 0 !important;
+        }
+        .number-spinner-container .number-spinner {
+            position: relative;
+            right: auto;
+            top: auto;
+            bottom: auto;
+            width: 32px;
+            height: 100%;
+            flex: none;
+            background: none;
+            border: none;
+            font-size: 14px;
+        }
+        .number-spinner-container .number-spinner-up {
+            border: none;
+        }
+        .number-spinner-container .number-spinner-down {
+            border: none;
+        }
+        input[type="number"]::-webkit-inner-spin-button,
+        input[type="number"]::-webkit-outer-spin-button {
+            -webkit-appearance: none;
+            appearance: none;
+            margin: 0;
+            width: 20px;
+            height: 15px;
+            background: #353535;
+            border: 1px solid #0a0a0a;
+            border-top: 1px solid #404040;
+            border-left: 1px solid #404040;
+            cursor: pointer;
+            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3), 0 1px 0 rgba(255, 255, 255, 0.1);
+            position: relative;
+            opacity: 1;
+            display: block;
+        }
+        input[type="number"]::-webkit-inner-spin-button {
+            background: #353535;
+        }
+        input[type="number"]::-webkit-inner-spin-button::after {
+            content: "▲";
+            position: absolute;
+            top: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 10px;
+            color: #e0e0e0;
+            line-height: 15px;
+            pointer-events: none;
+        }
+        input[type="number"]::-webkit-outer-spin-button {
+            background: #353535;
+        }
+        input[type="number"]::-webkit-outer-spin-button::after {
+            content: "▼";
+            position: absolute;
+            bottom: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 10px;
+            color: #e0e0e0;
+            line-height: 15px;
+            pointer-events: none;
+        }
+        input[type="number"]::-webkit-inner-spin-button:hover {
+            background: #404040;
+        }
+        input[type="number"]::-webkit-outer-spin-button:hover {
+            background: #404040;
+        }
+        input[type="number"]::-webkit-inner-spin-button:active {
+            background: #2b2b2b;
+            box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5);
+        }
+        input[type="number"]::-webkit-outer-spin-button:active {
+            background: #2b2b2b;
+            box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5);
+        }
+        span, label {
+            font-family: "chevyray", monospace;
+        }
+        canvas {
+            image-rendering: pixelated;
+            image-rendering: -moz-crisp-edges;
+            image-rendering: crisp-edges;
         }
     </style>
 </head>
@@ -708,7 +1366,24 @@
             <div style="width: 1px; background: #1a1a1a; margin: 0 4px;"></div>
             <button title="Set Working Directory" id="btnWorkingDir"><i class="fas fa-folder"></i></button>
             <div style="width: 1px; background: #1a1a1a; margin: 0 4px;"></div>
-            <button title="Background Color" id="btnBgColor"><i class="fas fa-palette"></i></button>
+            <div style="position: relative;">
+                <button title="Color Scheme" id="btnColorScheme"><i class="fas fa-palette"></i></button>
+                <div id="colorSchemeDropdown" style="display: none; position: absolute; top: 100%; left: 0; background: #2b2b2b; border: 1px solid #0a0a0a; border-top: 1px solid #404040; border-left: 1px solid #404040; z-index: 1000; min-width: 150px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5); margin-top: 2px; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">
+                <div class="color-scheme-item" data-scheme="default" style="padding: 8px; cursor: pointer; font-family: 'chevyray', monospace; font-size: 12px; color: #e0e0e0; border-bottom: 1px solid #0a0a0a; background: #404040; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">Default</div>
+                <div class="color-scheme-item" data-scheme="fusion-light" style="padding: 8px; cursor: pointer; font-family: 'chevyray', monospace; font-size: 12px; color: #e0e0e0; border-bottom: 1px solid #0a0a0a; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">Fusion Light</div>
+                <div class="color-scheme-item" data-scheme="fusion-dark" style="padding: 8px; cursor: pointer; font-family: 'chevyray', monospace; font-size: 12px; color: #e0e0e0; border-bottom: 1px solid #0a0a0a; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">Fusion Dark</div>
+                <div class="color-scheme-item" data-scheme="dark-style" style="padding: 8px; cursor: pointer; font-family: 'chevyray', monospace; font-size: 12px; color: #e0e0e0; border-bottom: 1px solid #0a0a0a; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">Dark Style</div>
+                <div class="color-scheme-item" data-scheme="dark-orange" style="padding: 8px; cursor: pointer; font-family: 'chevyray', monospace; font-size: 12px; color: #e0e0e0; border-bottom: 1px solid #0a0a0a; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">Dark Orange</div>
+                <div class="color-scheme-item" data-scheme="aqua" style="padding: 8px; cursor: pointer; font-family: 'chevyray', monospace; font-size: 12px; color: #e0e0e0; border-bottom: 1px solid #0a0a0a; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">Aqua</div>
+                <div class="color-scheme-item" data-scheme="elegant-dark" style="padding: 8px; cursor: pointer; font-family: 'chevyray', monospace; font-size: 12px; color: #e0e0e0; border-bottom: 1px solid #0a0a0a; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">Elegant Dark</div>
+                <div class="color-scheme-item" data-scheme="material-dark" style="padding: 8px; cursor: pointer; font-family: 'chevyray', monospace; font-size: 12px; color: #e0e0e0; border-bottom: 1px solid #0a0a0a; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">Material Dark</div>
+                <div class="color-scheme-item" data-scheme="light-style" style="padding: 8px; cursor: pointer; font-family: 'chevyray', monospace; font-size: 12px; color: #e0e0e0; border-bottom: 1px solid #0a0a0a; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">Light Style</div>
+                <div class="color-scheme-item" data-scheme="ayu-mirage" style="padding: 8px; cursor: pointer; font-family: 'chevyray', monospace; font-size: 12px; color: #e0e0e0; border-bottom: 1px solid #0a0a0a; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">Ayu Mirage</div>
+                <div class="color-scheme-item" data-scheme="dracula" style="padding: 8px; cursor: pointer; font-family: 'chevyray', monospace; font-size: 12px; color: #e0e0e0; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">Dracula</div>
+                </div>
+            </div>
+            <div style="width: 1px; background: #1a1a1a; margin: 0 4px;"></div>
+            <button title="Settings" id="btnSettings"><i class="fas fa-cog"></i></button>
             <button title="Swap WASD/Arrow Keys (WASD=Direction, Arrows=Move)" id="btnSwapKeys"><i class="fas fa-exchange-alt"></i></button>
             <div style="width: 1px; background: #1a1a1a; margin: 0 4px;"></div>
             <button title="Close All" id="btnCloseAll"><i class="fas fa-times"></i></button>
@@ -717,6 +1392,8 @@
             <button title="Redo" id="btnRedo"><i class="fas fa-redo"></i></button>
             <div style="width: 1px; background: #1a1a1a; margin: 0 4px;"></div>
             <button title="Reset Editor" id="btnReset"><i class="fas fa-recycle"></i></button>
+            <div style="width: 1px; background: #1a1a1a; margin: 0 4px;"></div>
+            <button title="About" id="btnAbout"><i class="fas fa-info-circle"></i></button>
         </div>
         <div class="tabs" id="tabsContainer"></div>
         <div class="content-area">
@@ -725,6 +1402,7 @@
                     <div class="left-panel">
                         <div class="sprite-toolbar">
                             <button title="Add New Sprite" id="btnAddSprite"><i class="fas fa-plus"></i></button>
+                            <button title="Edit Sprite" id="btnEditSprite"><i class="fas fa-pencil"></i></button>
                             <button title="Import Sprites" id="btnImportSprites"><i class="fas fa-file-import"></i></button>
                             <button title="Copy Sprite" id="btnCopySprite"><i class="fas fa-copy"></i></button>
                             <button title="Paste Sprite" id="btnPasteSprite"><i class="fas fa-paste"></i></button>
@@ -769,7 +1447,7 @@
                                     <option>PARAM9</option>
                                     <option>PARAM10</option>
                                 </select>
-                                <label>Image:</label>
+                                <label style="margin-top: 10px;">Image:</label>
                                 <input type="text" id="spriteImage">
                                 <label>Comment:</label>
                                 <input type="text" id="spriteComment">
@@ -802,7 +1480,7 @@
                                 <label style="display: flex; align-items: center; gap: 8px;">
                                     Color:
                                     <input type="checkbox" id="colorEffect">
-                                    <input type="color" id="colorSwatch" style="width: 60px; height: 24px; border: 1px solid #777; cursor: pointer; flex-shrink: 0; padding: 0;">
+                                    <input type="color" id="colorSwatch" style="width: 60px; height: 32px; border: 1px solid #0a0a0a; border-top: 1px solid #404040; border-left: 1px solid #404040; cursor: pointer; flex-shrink: 0; padding: 0; box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3);">
                                 </label>
                                 <div class="item-controls">
                                     <button id="btnAttachmentBack"><i class="fas fa-arrow-left"></i></button>
@@ -847,33 +1525,35 @@
                         <label><input type="checkbox" id="continous" checked> Continuous</label>
                         <label>Next Ani:</label>
                         <input type="text" id="nextAni">
-                        <button id="btnDefaults" style="width: 100%; margin-bottom: 8px;">Defaults</button>
+                        <button id="btnDefaults" style="width: 100%; margin-bottom: 8px; background: #1a1a1a; border: 1px solid #0a0a0a; border-top: 1px solid #404040; border-left: 1px solid #404040; color: #ffffff; padding: 8px; font-family: 'chevyray', monospace; font-size: 12px;">Defaults</button>
                         <table class="defaults-table" id="defaultsTable" style="display: none; visibility: hidden;">
                             <thead>
                                 <tr><th>Head</th><th>Value</th></tr>
                             </thead>
                             <tbody id="defaultsTableBody"></tbody>
                         </table>
-                        <button id="btnEditScript" style="width: 100%;">Edit Script</button>
+                        <button id="btnEditScript" style="width: 100%; background: #1a1a1a; border: 1px solid #0a0a0a; border-top: 1px solid #404040; border-left: 1px solid #404040; color: #ffffff; padding: 8px; font-family: 'chevyray', monospace; font-size: 12px;">Edit Script</button>
                     </div>
                     <div class="settings-group" id="historyGroup" style="display: none;">
-                        <h3 style="display: flex; align-items: center; gap: 8px;">History <input type="checkbox" id="historyLoggingToggle" checked></h3>
-                        <div id="historyList" style="max-height: 300px; overflow-y: auto; background: #1a1a1a; padding: 4px; border: 1px solid #555; font-size: 11px; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">
+                        <h3 style="display: flex; align-items: center; gap: 8px;">History <input type="checkbox" id="historyLoggingToggle"></h3>
+                        <div id="historyList" style="max-height: 300px; overflow-y: auto; background: #1a1a1a; padding: 4px; border: 1px solid #555; font-size: 12px; font-family: 'chevyray', monospace; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">
                         </div>
                         <div style="display: flex; gap: 4px; margin-top: 4px;">
-                            <button id="btnHistoryUndo" style="flex: 1; background: #666; color: #eee; border: 1px solid #777; padding: 4px; cursor: pointer;" disabled>Undo</button>
-                            <button id="btnHistoryRedo" style="flex: 1; background: #666; color: #eee; border: 1px solid #777; padding: 4px; cursor: pointer;" disabled>Redo</button>
-                            <button id="btnHistoryClear" style="flex: 1; background: #666; color: #eee; border: 1px solid #777; padding: 4px; cursor: pointer;">Clear</button>
+                            <button id="btnHistoryUndo" style="flex: 1; background: #1a1a1a; color: #ffffff; border: 1px solid #0a0a0a; border-top: 1px solid #404040; border-left: 1px solid #404040; padding: 8px; cursor: pointer; font-family: 'chevyray', monospace; font-size: 12px;" disabled>Undo</button>
+                            <button id="btnHistoryRedo" style="flex: 1; background: #1a1a1a; color: #ffffff; border: 1px solid #0a0a0a; border-top: 1px solid #404040; border-left: 1px solid #404040; padding: 8px; cursor: pointer; font-family: 'chevyray', monospace; font-size: 12px;" disabled>Redo</button>
+                            <button id="btnHistoryClear" style="flex: 1; background: #1a1a1a; color: #ffffff; border: 1px solid #0a0a0a; border-top: 1px solid #404040; border-left: 1px solid #404040; padding: 8px; cursor: pointer; font-family: 'chevyray', monospace; font-size: 12px;">Clear</button>
                         </div>
                     </div>
                     <div class="settings-group">
                         <h3>Item</h3>
-                        <select id="itemsCombo" style="width: 100%; margin-bottom: 8px;">
+                        <select id="itemsCombo" style="width: 100%; margin-bottom: 8px; background: #1a1a1a; border: 1px solid #0a0a0a; border-top: 1px solid #404040; border-left: 1px solid #404040; color: #ffffff; padding: 8px; font-family: 'chevyray', monospace; font-size: 12px;">
                             <option value="">(none)</option>
                         </select>
                         <div class="item-settings">
                             <label>Sprite ID:</label>
                             <input type="text" id="itemSpriteID">
+                            <label>Layer:</label>
+                            <input type="number" id="itemLayer" min="0" value="0">
                             <div class="item-controls">
                                 <button id="btnItemLayerUp" title="Move Forward"><i class="fas fa-plus"></i></button>
                                 <button id="btnItemLayerDown" title="Move Backward"><i class="fas fa-minus"></i></button>
@@ -901,8 +1581,6 @@
                                 <input type="range" id="itemRotationSlider" min="-360" max="360" step="1" value="0">
                                 <input type="number" id="itemRotation" min="-360" max="360" step="1" value="0">
                             </div>
-                            <label>Layer:</label>
-                            <input type="number" id="itemLayer" min="0" value="0">
                         </div>
                     </div>
                     <div class="settings-group">
@@ -949,13 +1627,155 @@
     <input type="file" id="fileInput" accept=".gani" style="display: none;">
     <input type="file" id="imageInput" multiple accept="image/*" style="display: none;">
     <input type="file" id="folderInput" webkitdirectory style="display: none;">
+    <div id="settingsDialog" class="dialog-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 0, 0, 0); z-index: 10000; justify-content: center; align-items: center;">
+        <div class="dialog-content" style="background: #2b2b2b; border: 2px solid #1a1a1a; padding: 20px; width: 400px; max-width: 90vw; max-height: 80vh; min-height: 300px; display: flex; flex-direction: column; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.8); overflow: hidden;">
+            <h3 style="margin: 0 0 16px 0; font-family: 'chevyray', monospace; font-size: 16px; color: #e0e0e0; border-bottom: 1px solid #0a0a0a; padding-bottom: 8px; flex-shrink: 0;">Settings</h3>
+            <div style="flex: 1; overflow-y: auto; padding-right: 8px; min-height: 0;">
+                <div style="margin-bottom: 16px;">
+                    <label style="display: block; margin-bottom: 8px; font-family: 'chevyray', monospace; font-size: 12px; color: #e0e0e0;">Font:</label>
+                    <select id="settingsFont" style="width: 100%; background: #1a1a1a; border: 1px solid #0a0a0a; border-top: 1px solid #404040; border-left: 1px solid #404040; color: #ffffff; padding: 8px; font-family: 'chevyray', monospace; font-size: 12px;">
+                    </select>
+                </div>
+                <div style="margin-bottom: 16px;">
+                    <label style="display: block; margin-bottom: 8px; font-family: 'chevyray', monospace; font-size: 12px; color: #e0e0e0;">Font Size:</label>
+                    <select id="settingsFontSize" style="width: 100%; background: #1a1a1a; border: 1px solid #0a0a0a; border-top: 1px solid #404040; border-left: 1px solid #404040; color: #ffffff; padding: 8px; font-family: 'chevyray', monospace; font-size: 12px;">
+                        <option value="8">8px</option>
+                        <option value="10">10px</option>
+                        <option value="12" selected>12px</option>
+                        <option value="14">14px</option>
+                        <option value="16">16px</option>
+                        <option value="18">18px</option>
+                        <option value="20">20px</option>
+                    </select>
+                </div>
+                <div style="margin-bottom: 16px;">
+                    <label style="display: block; margin-bottom: 8px; font-family: 'chevyray', monospace; font-size: 12px; color: #e0e0e0;">Font Style:</label>
+                    <select id="settingsFontStyle" style="width: 100%; background: #1a1a1a; border: 1px solid #0a0a0a; border-top: 1px solid #404040; border-left: 1px solid #404040; color: #ffffff; padding: 8px; font-family: 'chevyray', monospace; font-size: 12px;">
+                        <option value="normal">Normal</option>
+                        <option value="italic">Italic</option>
+                        <option value="bold">Bold</option>
+                        <option value="bold italic">Bold Italic</option>
+                    </select>
+                </div>
+                <div style="margin-bottom: 16px;">
+                    <label style="display: block; margin-bottom: 8px; font-family: 'chevyray', monospace; font-size: 12px; color: #e0e0e0;">UI Scale: <span id="settingsUIScaleValue">100%</span></label>
+                    <div style="display: flex; flex-direction: column; gap: 4px;">
+                        <input type="range" id="settingsUIScale" min="0.5" max="2" step="0.05" value="1" style="flex: 1; background: transparent; height: 8px; cursor: pointer; -webkit-appearance: none; appearance: none; border: none;">
+                        <input type="number" id="settingsUIScaleNumber" min="0.5" max="2" step="0.05" value="1">
+                    </div>
+                </div>
+                <style>
+                    #settingsUIScale {
+                        background: transparent;
+                        border: none;
+                        height: 8px;
+                        -webkit-appearance: none;
+                        appearance: none;
+                        cursor: pointer;
+                    }
+                    #settingsUIScale::-webkit-slider-runnable-track {
+                        background: transparent;
+                        height: 8px;
+                        box-shadow: inset 0px 2px 0px 0px #5B5B5B, inset 0px -2px 0px 0px #5B5B5B, inset -2px 0px 0px 0px #5B5B5B, inset 2px 0px 0px 0px #5B5B5B, 0px 2px 0px 0px #1E1E1E, 2px 0px 0px 0px #191919, -2px 0px 0px 0px #191919, 0px -2px 0px 0px #191919, 0px 4px 0px 0px rgba(25, 25, 25, .8);
+                    }
+                    #settingsUIScale::-moz-range-track {
+                        background: transparent;
+                        height: 8px;
+                        box-shadow: inset 0px 2px 0px 0px #5B5B5B, inset 0px -2px 0px 0px #5B5B5B, inset -2px 0px 0px 0px #5B5B5B, inset 2px 0px 0px 0px #5B5B5B, 0px 2px 0px 0px #1E1E1E, 2px 0px 0px 0px #191919, -2px 0px 0px 0px #191919, 0px -2px 0px 0px #191919, 0px 4px 0px 0px rgba(25, 25, 25, .8);
+                    }
+                    #settingsUIScale::-webkit-slider-thumb {
+                        -webkit-appearance: none;
+                        appearance: none;
+                        width: 16px;
+                        height: 24px;
+                        background: #2b2d31;
+                        border: none;
+                        cursor: pointer;
+                        margin-top: -8px;
+                        box-shadow: inset 0px 2px 0px 0px #5B5B5B, inset 0px -2px 0px 0px #5B5B5B, inset -2px 0px 0px 0px #5B5B5B, inset 2px 0px 0px 0px #5B5B5B, 0px 2px 0px 0px #1E1E1E, 2px 0px 0px 0px #191919, -2px 0px 0px 0px #191919, 0px -2px 0px 0px #191919, 0px 4px 0px 0px rgba(25, 25, 25, .8);
+                    }
+                    #settingsUIScale::-moz-range-thumb {
+                        width: 16px;
+                        height: 24px;
+                        background: #2b2d31;
+                        border: 3px solid #404248;
+                        cursor: pointer;
+                        box-shadow: inset 0px 2px 0px 0px #5B5B5B, inset 0px -2px 0px 0px #5B5B5B, inset -2px 0px 0px 0px #5B5B5B, inset 2px 0px 0px 0px #5B5B5B, 0px 2px 0px 0px #1E1E1E, 2px 0px 0px 0px #191919, -2px 0px 0px 0px #191919, 0px -2px 0px 0px #191919, 0px 4px 0px 0px rgba(25, 25, 25, .8);
+                    }
+                </style>
+                <div style="margin-bottom: 16px; border-top: 1px solid #0a0a0a; padding-top: 16px;">
+                    <div style="margin-bottom: 12px; font-family: 'chevyray', monospace; font-size: 12px; color: #e0e0e0;">Options:</div>
+                    <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-family: 'chevyray', monospace; font-size: 12px; color: #e0e0e0; cursor: pointer;">
+                        <input type="checkbox" id="settingsPixelRendering" checked style="cursor: pointer;">
+                        <span>Pixel Perfect Rendering</span>
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-family: 'chevyray', monospace; font-size: 12px; color: #e0e0e0; cursor: pointer;">
+                        <input type="checkbox" id="settingsAutoSave" checked style="cursor: pointer;">
+                        <span>Auto Save</span>
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-family: 'chevyray', monospace; font-size: 12px; color: #e0e0e0; cursor: pointer;">
+                        <input type="checkbox" id="settingsShowGrid" checked style="cursor: pointer;">
+                        <span>Show Grid</span>
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-family: 'chevyray', monospace; font-size: 12px; color: #e0e0e0; cursor: pointer;">
+                        <input type="checkbox" id="settingsGifAnimations" checked style="cursor: pointer;">
+                        <span>GIF Animations</span>
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-family: 'chevyray', monospace; font-size: 12px; color: #e0e0e0; cursor: pointer;">
+                        <input type="checkbox" id="settingsLightEffects" checked style="cursor: pointer;">
+                        <span>Light Effects</span>
+                    </label>
+                </div>
+            </div>
+            <div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; margin-top: 16px; border-top: 1px solid #0a0a0a; padding-top: 16px; flex-shrink: 0; min-width: 0; align-items: flex-start;">
+                <div style="display: flex; gap: 8px; flex-wrap: wrap; flex: 1; min-width: 0; align-items: flex-start;">
+                    <button id="settingsDefaults" style="background: #1a1a1a; color: #ffffff; border: 1px solid #0a0a0a; border-top: 1px solid #404040; border-left: 1px solid #404040; padding: 8px 16px; cursor: pointer; font-family: 'chevyray', monospace; font-size: 12px; white-space: nowrap; flex: 1; min-width: fit-content; align-self: flex-start;">Defaults</button>
+                    <button id="settingsReset" title="Reset Editor" style="background: #1a1a1a; color: #ffffff; border: 1px solid #0a0a0a; border-top: 1px solid #404040; border-left: 1px solid #404040; padding: 8px 16px; cursor: pointer; font-family: 'chevyray', monospace; font-size: 12px; white-space: nowrap; flex: 1; min-width: fit-content; align-self: flex-start; display: flex; align-items: center; justify-content: center;"><i class="fas fa-recycle"></i></button>
+                </div>
+                <div style="display: flex; gap: 8px; flex-wrap: wrap; flex: 1; min-width: 0; align-items: flex-start;">
+                    <button id="settingsCancel" style="background: #1a1a1a; color: #ffffff; border: 1px solid #0a0a0a; border-top: 1px solid #404040; border-left: 1px solid #404040; padding: 8px 16px; cursor: pointer; font-family: 'chevyray', monospace; font-size: 12px; white-space: nowrap; flex: 1; min-width: fit-content; align-self: flex-start;">Cancel</button>
+                    <button id="settingsOK" style="background: #1a1a1a; color: #ffffff; border: 1px solid #0a0a0a; border-top: 1px solid #404040; border-left: 1px solid #404040; padding: 8px 16px; cursor: pointer; font-family: 'chevyray', monospace; font-size: 12px; white-space: nowrap; flex: 1; min-width: fit-content; align-self: flex-start;">OK</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div id="aboutDialog" class="dialog-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 0, 0, 0); z-index: 10000; justify-content: center; align-items: center;">
+        <div class="dialog-content" style="background: #2b2b2b; border: 2px solid #1a1a1a; padding: 20px; width: 400px; max-width: 90vw; max-height: 80vh; display: flex; flex-direction: column; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.8);">
+            <h3 style="margin: 0 0 16px 0; font-family: 'chevyray', monospace; font-size: 16px; color: #e0e0e0; border-bottom: 1px solid #0a0a0a; padding-bottom: 8px; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">About Gani Editor</h3>
+            <div style="flex: 1; overflow-y: auto; padding-right: 8px; font-family: 'chevyray', monospace; font-size: 12px; color: #e0e0e0; line-height: 1.6; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">
+                <p style="margin: 0 0 12px 0;">Version <span id="aboutVersion" style="color: #888; font-size: 10px;"></span></p>
+                <p style="margin: 0 0 12px 0;">A javascript-based animation editor for GANI files, based around Stefan/39sters editors.</p>
+                <p style="margin: 0 0 12px 0;">Part of Preagonal/OpenGraal - preserving Graal for future generations.</p>
+                <p style="margin: 0 0 12px 0;">Press <strong>F1</strong> to view keyboard shortcuts.</p>
+                <p style="margin: 0 0 12px 0; border-top: 1px solid #0a0a0a; padding-top: 12px; font-size: 11px; color: #888;">
+                    <strong>Credits:</strong><br>
+                    Original C++ GaniEditor by <a href="https://www.xing.com/profile/Stefan_Knorr9" target="_blank" style="color: #4a9eff; text-decoration: none;">Stefan Knorr</a><br>
+                    Modern C++ version by <a href="https://github.com/lukegrahamSydney/TilesEditor" target="_blank" style="color: #4a9eff; text-decoration: none;">39ster/luke graham</a><br>
+                    Javascript Web version by <a href="https://github.com/denveous" target="_blank" style="color: #4a9eff; text-decoration: none;">denveous</a>
+                </p>
+            </div>
+            <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; border-top: 1px solid #0a0a0a; padding-top: 16px;">
+                <button id="aboutOK" style="background: #1a1a1a; color: #ffffff; border: 1px solid #0a0a0a; border-top: 1px solid #404040; border-left: 1px solid #404040; padding: 8px 16px; cursor: pointer; font-family: 'chevyray', monospace; font-size: 12px;">OK</button>
+            </div>
+        </div>
+    </div>
     <div id="defaultGaniDialog" class="dialog-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 0, 0, 0.7); z-index: 10000; justify-content: center; align-items: center;">
-        <div style="background: #2b2b2b; border: 2px solid #555; border-radius: 4px; padding: 20px; width: 400px; max-width: 90vw; max-height: 80vh; display: flex; flex-direction: column;">
-            <div style="margin-bottom: 16px; color: #e0e0e0; font-size: 16px; font-weight: bold;">Select Default GANI</div>
-            <div class="dialog-content" style="flex: 1; overflow-y: auto; border: 1px solid #555; background: #353535; min-height: 300px; max-height: 400px;">
+        <div style="background: #2b2b2b; border: 2px solid #1a1a1a; padding: 20px; width: 400px; max-width: 90vw; max-height: 80vh; display: flex; flex-direction: column;">
+            <div style="margin-bottom: 16px; color: #e0e0e0; font-size: 12px; font-family: 'chevyray', monospace;">Select Default GANI</div>
+            <div class="dialog-content" style="flex: 1; overflow-y: auto; border: 1px solid #1a1a1a; background: #353535; min-height: 300px; max-height: 400px;">
             </div>
             <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px;">
-                <button id="defaultGaniCancel" style="background: #555; color: #fff; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-size: 14px;">Cancel</button>
+                <button id="defaultGaniCancel" style="background: #353535; color: #fff; border: 1px solid #1a1a1a; padding: 8px 16px; cursor: pointer; font-size: 12px; font-family: 'chevyray', monospace;">Cancel</button>
+            </div>
+        </div>
+    </div>
+    <div id="hotkeysDialog" class="dialog-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 0, 0, 0); z-index: 10000; justify-content: center; align-items: center;">
+        <div class="dialog-content" style="background: #2b2b2b; border: 2px solid #1a1a1a; padding: 20px; width: 500px; max-width: 90vw; max-height: 80vh; display: flex; flex-direction: column; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.8);">
+            <h3 style="margin: 0 0 16px 0; font-family: 'chevyray', monospace; font-size: 16px; color: #e0e0e0; border-bottom: 1px solid #0a0a0a; padding-bottom: 8px; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">Keyboard Shortcuts</h3>
+            <div id="hotkeysContent" style="flex: 1; overflow-y: auto; padding-right: 8px; font-family: 'chevyray', monospace; font-size: 12px; color: #e0e0e0; line-height: 1.8; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">
+            </div>
+            <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; border-top: 1px solid #0a0a0a; padding-top: 16px;">
+                <button id="hotkeysOK" style="background: #1a1a1a; color: #ffffff; border: 1px solid #0a0a0a; border-top: 1px solid #404040; border-left: 1px solid #404040; padding: 8px 16px; cursor: pointer; font-family: 'chevyray', monospace; font-size: 12px;">OK</button>
             </div>
         </div>
     </div>
