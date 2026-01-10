@@ -2502,7 +2502,6 @@ function updateSpriteEditor() {
         } else {
             spriteMode.value = "";
         }
-        spriteMode.dispatchEvent(new Event('change', { bubbles: true }));
         const spriteModeWrapper = spriteMode.closest("div[style*='position: relative']");
         if (spriteModeWrapper) {
             const buttonText = spriteModeWrapper.querySelector(".custom-dropdown-button span");
@@ -3144,10 +3143,10 @@ function updateHistoryMenu() {
 function addUndoCommand(command) {
     if (!getCurrentHistoryLoggingEnabled()) return;
     if (!currentAnimation) return;
-    if (command.oldState && lastSerializedState) {
+    if (command.oldState && command.newState) {
         const oldStr = JSON.stringify(command.oldState);
-        const lastStr = JSON.stringify(lastSerializedState);
-        if (oldStr === lastStr) return;
+        const newStr = JSON.stringify(command.newState);
+        if (oldStr === newStr) return;
     }
     const undoStack = getCurrentUndoStack();
     let undoIndex = getCurrentUndoIndex();
@@ -3323,12 +3322,42 @@ function generateHistoryDescription(oldState, newState) {
     if (changes.length > 0) {
         return changes.join(", ");
     } else if (movedPieces.size > 0) {
+        const pieceInfo = [];
+        for (const pieceId of Array.from(movedPieces).slice(0, 3)) {
+            if (oldState.frames && newState.frames) {
+                for (let f = 0; f < Math.min(oldState.frames.length, newState.frames.length); f++) {
+                    const oldFrame = oldState.frames[f];
+                    const newFrame = newState.frames[f];
+                    if (oldFrame?.pieces && newFrame?.pieces) {
+                        for (let d = 0; d < Math.min(oldFrame.pieces.length, newFrame.pieces.length); d++) {
+                            const oldDir = oldFrame.pieces[d] || [];
+                            const newDir = newFrame.pieces[d] || [];
+                            const piece = newDir.find(p => p.id === pieceId) || oldDir.find(p => p.id === pieceId);
+                            if (piece && piece.type === "sprite") {
+                                if (currentAnimation) {
+                                    const sprite = currentAnimation.getAniSprite(piece.spriteIndex, piece.spriteName || "");
+                                    if (sprite?.comment) {
+                                        pieceInfo.push(`"${sprite.comment}"`);
+                                    } else {
+                                        pieceInfo.push(`Sprite ${piece.spriteIndex}`);
+                                    }
+                                } else {
+                                    pieceInfo.push(`Sprite ${piece.spriteIndex}`);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        const pieceName = pieceInfo.length > 0 ? ` ${pieceInfo[0]}${pieceInfo.length > 1 ? ` +${pieceInfo.length - 1}` : ''}` : '';
         if (scaledPieces > 0 && rotatedPieces === 0) {
-            return `Scale Piece${scaledPieces > 1 ? 's' : ''}`;
+            return `Scale Piece${scaledPieces > 1 ? 's' : ''}${pieceName}`;
         } else if (rotatedPieces > 0 && scaledPieces === 0) {
-            return `Rotate Piece${rotatedPieces > 1 ? 's' : ''}`;
+            return `Rotate Piece${rotatedPieces > 1 ? 's' : ''}${pieceName}`;
         } else {
-            return `Move Piece${movedPieces.size > 1 ? 's' : ''}`;
+            return `Move Piece${movedPieces.size > 1 ? 's' : ''}${pieceName}`;
         }
     } else if (changedSprites.size > 0) {
         const spriteNames = [];
@@ -5203,14 +5232,25 @@ window.addEventListener("load", async () => {
         () => { redraw(); drawSpritePreview(); saveSession(true); },
         () => `Change ${editingSprite?.comment ? `"${editingSprite.comment}"` : `Sprite ${editingSprite?.index}`} Zoom`
     );
-    document.getElementById("spriteMode").onchange = (e) => {
-        if (editingSprite) {
+    const spriteModeSelect = document.getElementById("spriteMode");
+    if (spriteModeSelect) {
+        spriteModeSelect.addEventListener("change", (e) => {
+            if (!editingSprite) return;
+            const modeDropdown = e.target;
+            const modeValue = modeDropdown.value;
+            const oldModeValue = editingSprite.hasOwnProperty("mode") && editingSprite.mode !== undefined && editingSprite.mode !== null ? String(editingSprite.mode) : "";
+            if (oldModeValue === modeValue) {
+                return;
+            }
             const oldState = serializeAnimationState();
-            const modeValue = e.target.value;
             if (modeValue === "") {
                 delete editingSprite.mode;
             } else {
-                editingSprite.mode = parseInt(modeValue);
+                const modeNum = parseInt(modeValue);
+                if (isNaN(modeNum)) {
+                    return;
+                }
+                editingSprite.mode = modeNum;
             }
             const newState = serializeAnimationState();
             const spriteName = editingSprite.comment ? `"${editingSprite.comment}"` : `Sprite ${editingSprite.index}`;
@@ -5221,11 +5261,21 @@ window.addEventListener("load", async () => {
                 undo: () => restoreAnimationState(oldState),
                 redo: () => restoreAnimationState(newState)
             });
+            const spriteModeWrapper = modeDropdown.closest("div[style*='position: relative']");
+            if (spriteModeWrapper) {
+                const buttonText = spriteModeWrapper.querySelector(".custom-dropdown-button span");
+                if (buttonText) {
+                    const selectedOption = modeDropdown.options[modeDropdown.selectedIndex];
+                    if (selectedOption) {
+                        buttonText.textContent = selectedOption.text;
+                    }
+                }
+            }
             redraw();
             drawSpritePreview();
             saveSession(true);
-        }
-    };
+        });
+    }
     document.getElementById("spriteLeft").onchange = (e) => {
         if (editingSprite) {
             const oldState = serializeAnimationState();
