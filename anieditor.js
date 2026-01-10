@@ -9,6 +9,7 @@ class AniSprite {
         this.rotation = 0.0;
         this.xscale = 1.0;
         this.yscale = 1.0;
+        this.mode = undefined;
         this.colorEffectEnabled = false;
         this.colorEffect = {r: 255, g: 255, b: 255, a: 255};
         this.comment = "";
@@ -34,6 +35,7 @@ class AniSprite {
         retval.rotation = this.rotation;
         retval.xscale = this.xscale;
         retval.yscale = this.yscale;
+        retval.mode = this.mode;
         retval.updateBoundingBox();
         return retval;
     }
@@ -154,6 +156,17 @@ class Frame {
     }
 }
 
+function generateAnimationId(animation) {
+    const str = `${animation.fileName || ""}_${Date.now()}_${Math.random()}`;
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+        const char = str.charCodeAt(i);
+        hash = ((hash << 5) - hash) + char;
+        hash = hash & hash;
+    }
+    return Math.abs(hash).toString(36);
+}
+
 class Animation {
     constructor(name = "") {
         this.fileName = name;
@@ -171,6 +184,7 @@ class Animation {
         this.undoStack = [];
         this.undoIndex = -1;
         this.historyLoggingEnabled = true;
+        this.id = generateAnimationId(this);
     }
     getAniSprite(index, name) {
         if (this.sprites.has(index)) return this.sprites.get(index);
@@ -310,7 +324,7 @@ function f12Log(message) {
                 context = tabIndex >= 0 ? `Animation ${tabIndex + 1}` : 'unnamed';
             }
         }
-        if (DEBUG_MODE) console.log(`[${context}:${funcName}] ${message}`);
+        if (DEBUG_MODE) f12Log(`[${context}:${funcName}] ${message}`);
     } catch (e) {
         let context = 'no-animation';
         if (currentAnimation) {
@@ -321,7 +335,7 @@ function f12Log(message) {
                 context = tabIndex >= 0 ? `Animation ${tabIndex + 1}` : 'unnamed';
             }
         }
-        if (DEBUG_MODE) console.log(`[${context}:unknown] ${message}`);
+        if (DEBUG_MODE) f12Log(`[${context}:unknown] ${message}`);
     }
 }
 function getDirIndex(comboIndex) {
@@ -334,12 +348,19 @@ function getComboIndexFromDirIndex(dirIndex) {
     const mapping = [2, 1, 0, 3];
     return mapping.indexOf(dirIndex);
 }
-const zoomFactors = [0.25, 0.5, 0.75, 1.0, 2, 3, 4, 8];
+const zoomFactors = [0.25, 0.3, 0.35, 0.4, 0.5, 0.75, 1.0, 2, 3, 4, 8, 12, 16, 24, 32, 48, 64];
 const dpr = window.devicePixelRatio || 1;
 
 let editingSprite = null;
-let zoomLevel = parseInt(localStorage.getItem("mainCanvasZoom")) || 3;
+let zoomLevel = parseInt(localStorage.getItem("mainCanvasZoom")) || 6;
 let spritePreviewZoom = 3;
+let spritePreviewPanX = 0;
+let spritePreviewPanY = 0;
+let spritePreviewPanning = false;
+let spritePreviewPanStartX = 0;
+let spritePreviewPanStartY = 0;
+let spritePreviewPanStartPanX = 0;
+let spritePreviewPanStartPanY = 0;
 let panX = 0;
 let panY = 0;
 let isPlaying = false;
@@ -351,11 +372,44 @@ let workingDirectory = "";
 let lastWorkingDirectory = localStorage.getItem("ganiEditorLastWorkingDir") || "";
 let lastOpenDirectory = localStorage.getItem("ganiEditorLastOpenDir") || "";
 let onionSkinEnabled = false;
-let maxUndo = 30;
+let splitViewEnabled = localStorage.getItem("ganiEditorSplitView") === "true";
+let mirroredActionsEnabled = false;
+let maxUndo = 50;
 let redrawScheduled = false;
 let redrawRafId = null;
 let soundIconCache = { yellow: null, green: null };
 let lastSerializedState = null;
+function findMatchingPiecesAcrossDirections(piece, pieceDir) {
+    if (!currentAnimation || !piece || piece.type !== "sprite") return [];
+    if (pieceDir === undefined || pieceDir < 0 || pieceDir > 3) {
+        const frame = currentAnimation.getFrame(currentFrame);
+        if (!frame) return [];
+        pieceDir = -1;
+        for (let dir = 0; dir < 4; dir++) {
+            const pieces = frame.pieces[dir] || [];
+            if (pieces.includes(piece)) {
+                pieceDir = dir;
+                break;
+            }
+        }
+        if (pieceDir === -1) return [];
+    }
+    const frame = currentAnimation.getFrame(currentFrame);
+    if (!frame) return [];
+    const matches = [];
+    const targetSpriteIndex = piece.spriteIndex;
+    const targetSpriteName = piece.spriteName || "";
+    for (let dir = 0; dir < 4; dir++) {
+        if (dir === pieceDir) continue;
+        const pieces = frame.pieces[dir] || [];
+        for (const p of pieces) {
+            if (p.type === "sprite" && p.spriteIndex === targetSpriteIndex && (p.spriteName || "") === targetSpriteName) {
+                matches.push(p);
+            }
+        }
+    }
+    return matches;
+}
 function getCurrentUndoStack() {
     if (!currentAnimation) return [];
     if (!currentAnimation.undoStack) currentAnimation.undoStack = [];
@@ -386,11 +440,15 @@ let dragStartMousePos = null;
 let pieceInitialPositions = new Map();
 let isDragging = false;
 let insertPiece = null;
+let selectedAttachedSprite = -1;
+let attachedSpriteStartMove = null;
+let isPlacingAttachment = false;
 let lastMouseX = 0;
 let lastMouseY = 0;
 let boxSelectStart = null;
 let boxSelectEnd = null;
 let isBoxSelecting = false;
+let boxSelectQuadrant = -1;
 let spriteSplitterDragging = false;
 let leftCenterSplitterDragging = false;
 let centerRightSplitterDragging = false;
@@ -680,19 +738,22 @@ function drawGrid(ctx) {
     ctx.globalAlpha = 1;
 }
 
-function drawSprite(ctx, sprite, x, y, level = 0) {
+function drawSprite(ctx, sprite, x, y, level = 0, drawnSprites = null) {
     if (level > 3) return;
     if (!sprite) return;
+    if (drawnSprites === null) drawnSprites = new Set();
+    if (level > 0 && drawnSprites.has(sprite.index)) return;
+    if (level > 0) drawnSprites.add(sprite.index);
     ctx.imageSmoothingEnabled = false;
     for (let i = 0; i < sprite.m_drawIndex && i < sprite.attachedSprites.length; i++) {
         const attached = sprite.attachedSprites[i];
         const child = currentAnimation.getAniSprite(attached.index, "");
-        if (child) drawSprite(ctx, child, x + attached.offset.x, y + attached.offset.y, level + 1);
+        if (child && level < 10) drawSprite(ctx, child, x + attached.offset.x, y + attached.offset.y, level + 1, drawnSprites);
     }
     const img = getSpriteImage(sprite);
     if (img) {
         const imageName = sprite.type === "CUSTOM" ? sprite.customImageName.toLowerCase() : (currentAnimation ? currentAnimation.getDefaultImageName(sprite.type) : "").toLowerCase();
-        const isLightImage = localStorage.getItem("editorLightEffects") !== "false" && (imageName.includes("light") || sprite.comment.toLowerCase().includes("light"));
+        const isLightImage = (sprite.mode === 0) || (sprite.mode === undefined && localStorage.getItem("editorLightEffects") !== "false" && (imageName.includes("light") || sprite.comment.toLowerCase().includes("light")));
         ctx.save();
         ctx.imageSmoothingEnabled = false;
         ctx.translate(Math.round(x), Math.round(y));
@@ -748,6 +809,55 @@ function drawSprite(ctx, sprite, x, y, level = 0) {
             }
             ctx.globalCompositeOperation = "source-over";
             ctx.globalAlpha = 1.0;
+        } else if (sprite.mode === 1) {
+            const colorKey = sprite.colorEffectEnabled && sprite.colorEffect ? `${sprite.colorEffect.r},${sprite.colorEffect.g},${sprite.colorEffect.b},${sprite.colorEffect.a}` : "none";
+            if (!sprite._cachedColorCanvas || sprite._cachedColorKey !== colorKey || sprite._cachedImageSrc !== img.src) {
+                const tempCanvas = document.createElement("canvas");
+                tempCanvas.width = sprite.width;
+                tempCanvas.height = sprite.height;
+                const tempCtx = tempCanvas.getContext("2d");
+                tempCtx.imageSmoothingEnabled = false;
+                tempCtx.drawImage(img, sprite.left, sprite.top, sprite.width, sprite.height, 0, 0, sprite.width, sprite.height);
+                if (sprite.colorEffectEnabled && sprite.colorEffect) {
+                    tempCtx.globalCompositeOperation = "multiply";
+                    tempCtx.fillStyle = `rgb(${sprite.colorEffect.r}, ${sprite.colorEffect.g}, ${sprite.colorEffect.b})`;
+                    tempCtx.fillRect(0, 0, sprite.width, sprite.height);
+                    tempCtx.globalCompositeOperation = "destination-in";
+                    tempCtx.drawImage(img, sprite.left, sprite.top, sprite.width, sprite.height, 0, 0, sprite.width, sprite.height);
+                }
+                sprite._cachedColorCanvas = tempCanvas;
+                sprite._cachedColorKey = colorKey;
+                sprite._cachedImageSrc = img.src;
+            }
+            const alpha = sprite.colorEffectEnabled && sprite.colorEffect ? (sprite.colorEffect.a / 255) : 1.0;
+            ctx.globalAlpha = alpha;
+            ctx.imageSmoothingEnabled = false;
+            ctx.drawImage(sprite._cachedColorCanvas, 0, 0);
+            ctx.globalAlpha = 1.0;
+        } else if (sprite.mode === 2) {
+            const colorKey = sprite.colorEffectEnabled && sprite.colorEffect ? `${sprite.colorEffect.r},${sprite.colorEffect.g},${sprite.colorEffect.b},${sprite.colorEffect.a}` : "none";
+            if (!sprite._cachedColorCanvas || sprite._cachedColorKey !== colorKey || sprite._cachedImageSrc !== img.src) {
+                const tempCanvas = document.createElement("canvas");
+                tempCanvas.width = sprite.width;
+                tempCanvas.height = sprite.height;
+                const tempCtx = tempCanvas.getContext("2d");
+                tempCtx.imageSmoothingEnabled = false;
+                tempCtx.drawImage(img, sprite.left, sprite.top, sprite.width, sprite.height, 0, 0, sprite.width, sprite.height);
+                if (sprite.colorEffectEnabled && sprite.colorEffect) {
+                    tempCtx.globalCompositeOperation = "multiply";
+                    tempCtx.fillStyle = `rgb(${sprite.colorEffect.r}, ${sprite.colorEffect.g}, ${sprite.colorEffect.b})`;
+                    tempCtx.fillRect(0, 0, sprite.width, sprite.height);
+                    tempCtx.globalCompositeOperation = "destination-in";
+                    tempCtx.drawImage(img, sprite.left, sprite.top, sprite.width, sprite.height, 0, 0, sprite.width, sprite.height);
+                }
+                sprite._cachedColorCanvas = tempCanvas;
+                sprite._cachedColorKey = colorKey;
+                sprite._cachedImageSrc = img.src;
+            }
+            ctx.globalCompositeOperation = "destination-out";
+            ctx.imageSmoothingEnabled = false;
+            ctx.drawImage(sprite._cachedColorCanvas, 0, 0);
+            ctx.globalCompositeOperation = "source-over";
         } else if (sprite.colorEffectEnabled && sprite.colorEffect) {
             const colorKey = `${sprite.colorEffect.r},${sprite.colorEffect.g},${sprite.colorEffect.b},${sprite.colorEffect.a}`;
             if (!sprite._cachedColorCanvas || sprite._cachedColorKey !== colorKey || sprite._cachedImageSrc !== img.src) {
@@ -802,7 +912,7 @@ function drawSprite(ctx, sprite, x, y, level = 0) {
     for (let i = sprite.m_drawIndex; i < sprite.attachedSprites.length; i++) {
         const attached = sprite.attachedSprites[i];
         const child = currentAnimation.getAniSprite(attached.index, "");
-        if (child) drawSprite(ctx, child, x + attached.offset.x, y + attached.offset.y, level + 1);
+        if (child && level < 10) drawSprite(ctx, child, x + attached.offset.x, y + attached.offset.y, level + 1, drawnSprites);
     }
 }
 
@@ -884,7 +994,7 @@ async function loadLocalImages(loading) {
             }
         }
     } catch (e) {
-        if (DEBUG_MODE) console.warn('Dynamic image loading failed, using fallback list');
+        if (DEBUG_MODE) f12Log('Dynamic image loading failed, using fallback list');
     }
     if (imageFiles.length === 0) imageFiles = fallbackImages;
     const totalFiles = imageFiles.length;
@@ -942,14 +1052,57 @@ function redraw() {
         return;
     }
     const scale = zoomFactors[zoomLevel] || 1.0;
+    const frame = currentAnimation.getFrame(currentFrame);
+    if (splitViewEnabled && !currentAnimation.singleDir && frame) {
+        const quadWidth = width / 2;
+        const quadHeight = height / 2;
+        const dirNames = ["UP", "LEFT", "DOWN", "RIGHT"];
+        for (let i = 0; i < 4; i++) {
+            const quadX = (i % 2) * quadWidth;
+            const quadY = Math.floor(i / 2) * quadHeight;
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(quadX, quadY, quadWidth, quadHeight);
+            ctx.clip();
+            ctx.fillStyle = backgroundColor;
+            ctx.fillRect(quadX, quadY, quadWidth, quadHeight);
+            ctx.restore();
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(quadX, quadY, quadWidth, quadHeight);
+            ctx.clip();
+            drawQuadrant(ctx, frame, i, quadX, quadY, quadWidth, quadHeight, scale, panX, panY);
+            ctx.restore();
+            ctx.save();
+            ctx.fillStyle = "#ffffff";
+            ctx.font = "bold 14px 'chevyray', monospace";
+            ctx.textAlign = "right";
+            ctx.textBaseline = "top";
+            ctx.shadowColor = "rgba(0, 0, 0, 0.5)";
+            ctx.shadowBlur = 3;
+            ctx.shadowOffsetX = 1;
+            ctx.shadowOffsetY = 1;
+            ctx.fillText(dirNames[i], quadX + quadWidth - 8, quadY + 8);
+            ctx.restore();
+        }
+        ctx.save();
+        ctx.strokeStyle = "#404040";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(width / 2, 0);
+        ctx.lineTo(width / 2, height);
+        ctx.moveTo(0, height / 2);
+        ctx.lineTo(width, height / 2);
+        ctx.stroke();
+        ctx.restore();
+    } else {
     ctx.save();
     ctx.translate(width / 2 + panX, height / 2 + panY);
     ctx.scale(scale, scale);
-        const showGrid = localStorage.getItem("editorShowGrid") !== "false";
-        if (showGrid) {
+            const showGrid = localStorage.getItem("editorShowGrid") !== "false";
+            if (showGrid) {
     drawGrid(ctx);
-        }
-    const frame = currentAnimation.getFrame(currentFrame);
+            }
     if (frame) {
         if (onionSkinEnabled) {
             if (currentFrame > 0) {
@@ -972,6 +1125,8 @@ function redraw() {
         } else {
             drawFrame(ctx, frame, currentDir);
         }
+        }
+        ctx.restore();
     }
     if (insertPiece) {
         const sprite = currentAnimation.getAniSprite(insertPiece.spriteIndex, insertPiece.spriteName);
@@ -980,18 +1135,64 @@ function redraw() {
             const zoom = zoomFactors[zoomLevel] || 1.0;
             const mouseX = (lastMouseX || 0) - rect.left;
             const mouseY = (lastMouseY || 0) - rect.top;
+            if (splitViewEnabled && !currentAnimation.singleDir) {
+                const quadWidth = width / 2;
+                const quadHeight = height / 2;
+                const quadIndex = Math.floor(mouseY / quadHeight) * 2 + Math.floor(mouseX / quadWidth);
+                const dir = Math.min(3, Math.max(0, quadIndex));
+                const quadX = (quadIndex % 2) * quadWidth;
+                const quadY = Math.floor(quadIndex / 2) * quadHeight;
+                const worldX = (mouseX - quadX - quadWidth / 2 - panX) / zoom;
+                const worldY = (mouseY - quadY - quadHeight / 2 - panY) / zoom;
+                insertPiece.xoffset = Math.floor(0.5 + worldX - insertPiece.dragOffset.x);
+                insertPiece.yoffset = Math.floor(0.5 + worldY - insertPiece.dragOffset.y);
+                ctx.save();
+                ctx.beginPath();
+                ctx.rect(quadX, quadY, quadWidth, quadHeight);
+                ctx.clip();
+                ctx.translate(quadX + quadWidth / 2 + panX, quadY + quadHeight / 2 + panY);
+                ctx.scale(zoom, zoom);
+                drawSprite(ctx, sprite, insertPiece.xoffset, insertPiece.yoffset);
+                ctx.restore();
+            } else {
             const worldX = (mouseX - panX - width / 2) / zoom;
             const worldY = (mouseY - panY - height / 2) / zoom;
             insertPiece.xoffset = Math.floor(0.5 + worldX - insertPiece.dragOffset.x);
             insertPiece.yoffset = Math.floor(0.5 + worldY - insertPiece.dragOffset.y);
+                ctx.save();
+                ctx.translate(width / 2 + panX, height / 2 + panY);
+                ctx.scale(zoom, zoom);
             drawSprite(ctx, sprite, insertPiece.xoffset, insertPiece.yoffset);
+                ctx.restore();
         }
     }
-    ctx.restore();
+    }
     drawTimeline();
     if (editingSprite) drawSpritePreview();
     if (isBoxSelecting && boxSelectStart && boxSelectEnd) {
         const zoom = zoomFactors[zoomLevel] || 1.0;
+        if (splitViewEnabled && !currentAnimation.singleDir) {
+            if (boxSelectQuadrant >= 0 && boxSelectQuadrant < 4) {
+                const quadWidth = width / 2;
+                const quadHeight = height / 2;
+                const quadX = (boxSelectQuadrant % 2) * quadWidth;
+                const quadY = Math.floor(boxSelectQuadrant / 2) * quadHeight;
+                const screenX1 = boxSelectStart.x * zoom + quadX + quadWidth / 2 + panX;
+                const screenY1 = boxSelectStart.y * zoom + quadY + quadHeight / 2 + panY;
+                const screenX2 = boxSelectEnd.x * zoom + quadX + quadWidth / 2 + panX;
+                const screenY2 = boxSelectEnd.y * zoom + quadY + quadHeight / 2 + panY;
+                ctx.save();
+                ctx.beginPath();
+                ctx.rect(quadX, quadY, quadWidth, quadHeight);
+                ctx.clip();
+                ctx.strokeStyle = "#00ff00";
+                ctx.lineWidth = 1;
+                ctx.setLineDash([5, 5]);
+                ctx.strokeRect(Math.min(screenX1, screenX2), Math.min(screenY1, screenY2), Math.abs(screenX2 - screenX1), Math.abs(screenY2 - screenY1));
+                ctx.setLineDash([]);
+                ctx.restore();
+            }
+        } else {
         const screenX1 = boxSelectStart.x * zoom + width / 2 + panX;
         const screenY1 = boxSelectStart.y * zoom + height / 2 + panY;
         const screenX2 = boxSelectEnd.x * zoom + width / 2 + panX;
@@ -1001,6 +1202,7 @@ function redraw() {
         ctx.setLineDash([5, 5]);
         ctx.strokeRect(Math.min(screenX1, screenX2), Math.min(screenY1, screenY2), Math.abs(screenX2 - screenX1), Math.abs(screenY2 - screenY1));
         ctx.setLineDash([]);
+        }
     }
     if (insertPiece) {
         mainCanvas.style.cursor = "crosshair";
@@ -1025,10 +1227,12 @@ function drawFrame(ctx, frame, dir) {
             if (sprite) {
                 const isSelected = selectedPieces.has(piece);
                 if (isSelected) {
-                    ctx.strokeStyle = "#00ff00";
-                    ctx.lineWidth = 2;
+                    const borderColor = localStorage.getItem("editorSelectionBorderColor") || "#00ff00";
+                    const borderThickness = parseInt(localStorage.getItem("editorSelectionBorderThickness")) || 2;
+                    ctx.strokeStyle = borderColor;
+                    ctx.lineWidth = borderThickness;
                     const bb = piece.getBoundingBox(currentAnimation);
-                    ctx.strokeRect(Math.round(bb.x - 2), Math.round(bb.y - 2), Math.round(bb.width + 4), Math.round(bb.height + 4));
+                    ctx.strokeRect(bb.x - borderThickness, bb.y - borderThickness, bb.width + borderThickness * 2, bb.height + borderThickness * 2);
                 }
                 ctx.save();
                 ctx.imageSmoothingEnabled = false;
@@ -1083,9 +1287,11 @@ function drawFrame(ctx, frame, dir) {
                 }
                 ctx.drawImage(cachedIcon, x, y);
                 if (isSelected) {
-                    ctx.strokeStyle = "#00ff00";
-                    ctx.lineWidth = 2;
-                    ctx.strokeRect(x - 2, y - 2, iconSize + 4, iconSize + 4);
+                    const borderColor = localStorage.getItem("editorSelectionBorderColor") || "#00ff00";
+                    const borderThickness = parseInt(localStorage.getItem("editorSelectionBorderThickness")) || 2;
+                    ctx.strokeStyle = borderColor;
+                    ctx.lineWidth = borderThickness;
+                    ctx.strokeRect(x - borderThickness, y - borderThickness, iconSize + borderThickness * 2, iconSize + borderThickness * 2);
                 }
                 ctx.restore();
             } else {
@@ -1097,6 +1303,38 @@ function drawFrame(ctx, frame, dir) {
             }
         }
     }
+}
+
+function drawQuadrant(ctx, frame, dir, quadrantX, quadrantY, quadrantWidth, quadrantHeight, scale, panX, panY) {
+    ctx.save();
+    ctx.translate(quadrantX + quadrantWidth / 2 + panX, quadrantY + quadrantHeight / 2 + panY);
+    ctx.scale(scale, scale);
+    const showGrid = localStorage.getItem("editorShowGrid") !== "false";
+    if (showGrid) {
+        drawGrid(ctx);
+    }
+    if (onionSkinEnabled) {
+        if (currentFrame > 0) {
+            const prevFrame = currentAnimation.getFrame(currentFrame - 1);
+            if (prevFrame) {
+                ctx.globalAlpha = 0.3;
+                drawFrame(ctx, prevFrame, dir);
+                ctx.globalAlpha = 1.0;
+            }
+        }
+        drawFrame(ctx, frame, dir);
+        if (currentFrame < currentAnimation.frames.length - 1) {
+            const nextFrame = currentAnimation.getFrame(currentFrame + 1);
+            if (nextFrame) {
+                ctx.globalAlpha = 0.3;
+                drawFrame(ctx, nextFrame, dir);
+                ctx.globalAlpha = 1.0;
+            }
+        }
+    } else {
+        drawFrame(ctx, frame, dir);
+    }
+    ctx.restore();
 }
 
 function getTimelineBackgroundColor() {
@@ -1430,8 +1668,33 @@ function drawSpritePreview() {
     const scale = Math.pow(1.2, spritePreviewZoom - 3);
     previewCtx.save();
     previewCtx.translate(width / 2, height / 2);
+    previewCtx.translate(spritePreviewPanX, spritePreviewPanY);
     previewCtx.scale(scale, scale);
     drawSprite(previewCtx, editingSprite, -editingSprite.width / 2, -editingSprite.height / 2);
+    if (selectedAttachedSprite >= 0 && selectedAttachedSprite < editingSprite.attachedSprites.length) {
+        const attached = editingSprite.attachedSprites[selectedAttachedSprite];
+        const attachedSprite = currentAnimation.getAniSprite(attached.index, "");
+        if (attachedSprite) {
+            const mainSpriteX = -editingSprite.width / 2;
+            const mainSpriteY = -editingSprite.height / 2;
+            const attachedDrawX = mainSpriteX + attached.offset.x;
+            const attachedDrawY = mainSpriteY + attached.offset.y;
+            const bbox = attachedSprite.boundingBox;
+            previewCtx.save();
+            previewCtx.strokeStyle = "#00ff00";
+            previewCtx.lineWidth = 2;
+            previewCtx.strokeRect(Math.round(attachedDrawX + bbox.x - 2), Math.round(attachedDrawY + bbox.y - 2), Math.round(bbox.width + 4), Math.round(bbox.height + 4));
+            previewCtx.restore();
+        }
+    }
+    if (insertPiece && insertPiece.spriteIndex !== undefined && !isPlacingAttachment) {
+        const sprite = currentAnimation.getAniSprite(insertPiece.spriteIndex, insertPiece.spriteName);
+        if (sprite) {
+            const offsetX = -editingSprite.width / 2 + insertPiece.xoffset;
+            const offsetY = -editingSprite.height / 2 + insertPiece.yoffset;
+            drawSprite(previewCtx, sprite, offsetX, offsetY);
+        }
+    }
     previewCtx.restore();
 }
 
@@ -1469,31 +1732,33 @@ function parseGani(text) {
             if (sprite) {
                 sprite.xscale = parseFloat(words[2]) || 1.0;
                 sprite.updateBoundingBox();
-                if (DEBUG_MODE) console.log(`Loaded STRETCHXEFFECT for sprite ${words[1]}: ${sprite.xscale}`);
+                if (DEBUG_MODE) f12Log(`Loaded STRETCHXEFFECT for sprite ${words[1]}: ${sprite.xscale}`);
             }
         } else if (word1 === "STRETCHYEFFECT" && words.length >= 3) {
             const sprite = ani.getAniSprite(parseInt(words[1]), "");
             if (sprite) {
                 sprite.yscale = parseFloat(words[2]) || 1.0;
                 sprite.updateBoundingBox();
-                if (DEBUG_MODE) console.log(`Loaded STRETCHYEFFECT for sprite ${words[1]}: ${sprite.yscale}`);
+                if (DEBUG_MODE) f12Log(`Loaded STRETCHYEFFECT for sprite ${words[1]}: ${sprite.yscale}`);
             }
         } else if (word1 === "ROTATEEFFECT" && words.length >= 3) {
             const sprite = ani.getAniSprite(parseInt(words[1]), "");
             if (sprite) {
                 sprite.rotation = parseFloat(words[2]) * 180 / Math.PI;
                 sprite.updateBoundingBox();
-                if (DEBUG_MODE) console.log(`Loaded ROTATEEFFECT for sprite ${words[1]}: ${sprite.rotation}`);
+                if (DEBUG_MODE) f12Log(`Loaded ROTATEEFFECT for sprite ${words[1]}: ${sprite.rotation}`);
             }
         } else if ((word1 === "ATTACHSPRITE" || word1 === "ATTACHSPRITE2") && words.length >= 5) {
             const behind = word1 === "ATTACHSPRITE2";
             const parent = ani.getAniSprite(parseInt(words[1]), "");
             if (parent) {
                 const attach = {index: parseInt(words[2]), offset: {x: parseFloat(words[3]), y: parseFloat(words[4])}};
-            if (behind) {
-                parent.attachedSprites.splice(parent.m_drawIndex, 0, attach);
-                parent.m_drawIndex++;
-            } else parent.attachedSprites.push(attach);
+                if (behind) {
+                    parent.attachedSprites.splice(parent.m_drawIndex, 0, attach);
+                    parent.m_drawIndex++;
+                } else {
+                    parent.attachedSprites.push(attach);
+                }
             }
         } else if (word1 === "COLOREFFECT" && words.length >= 6) {
             const sprite = ani.getAniSprite(parseInt(words[1]), "");
@@ -1511,7 +1776,14 @@ function parseGani(text) {
             if (sprite) {
                 sprite.xscale = sprite.yscale = parseFloat(words[2]) || 1.0;
                 sprite.updateBoundingBox();
-                if (DEBUG_MODE) console.log(`Loaded ZOOMEFFECT for sprite ${words[1]}: ${sprite.xscale}`);
+                if (DEBUG_MODE) f12Log(`Loaded ZOOMEFFECT for sprite ${words[1]}: ${sprite.xscale}`);
+            }
+        } else if (word1 === "EFFECTMODE" && words.length >= 3) {
+            const sprite = ani.getAniSprite(parseInt(words[1]), "");
+            if (sprite) {
+                const modeValue = parseInt(words[2]);
+                sprite.mode = isNaN(modeValue) ? undefined : modeValue;
+                if (DEBUG_MODE) f12Log(`Loaded EFFECTMODE for sprite ${words[1]}: ${sprite.mode}`);
             }
         } else if (word1 === "LOOP") {
             ani.looped = true;
@@ -1750,20 +2022,24 @@ function saveGani(ani) {
         }
         if (sprite.xscale === sprite.yscale && sprite.xscale !== 1.0) {
             otherCommands.push(`ZOOMEFFECT ${String(sprite.index).padStart(4)} ${sprite.xscale}`);
-            if (DEBUG_MODE) console.log(`Saving ZOOMEFFECT for sprite ${sprite.index}: ${sprite.xscale}`);
+            if (DEBUG_MODE) f12Log(`Saving ZOOMEFFECT for sprite ${sprite.index}: ${sprite.xscale}`);
         } else {
             if (sprite.xscale !== 1.0) {
                 otherCommands.push(`STRETCHXEFFECT ${String(sprite.index).padStart(4)} ${sprite.xscale}`);
-                if (DEBUG_MODE) console.log(`Saving STRETCHXEFFECT for sprite ${sprite.index}: ${sprite.xscale}`);
+                if (DEBUG_MODE) f12Log(`Saving STRETCHXEFFECT for sprite ${sprite.index}: ${sprite.xscale}`);
             }
             if (sprite.yscale !== 1.0) {
                 otherCommands.push(`STRETCHYEFFECT ${String(sprite.index).padStart(4)} ${sprite.yscale}`);
-                if (DEBUG_MODE) console.log(`Saving STRETCHYEFFECT for sprite ${sprite.index}: ${sprite.yscale}`);
+                if (DEBUG_MODE) f12Log(`Saving STRETCHYEFFECT for sprite ${sprite.index}: ${sprite.yscale}`);
             }
         }
         if (sprite.rotation !== 0.0) {
             otherCommands.push(`ROTATEEFFECT ${String(sprite.index).padStart(4)} ${sprite.rotation * Math.PI / 180}`);
-            if (DEBUG_MODE) console.log(`Saving ROTATEEFFECT for sprite ${sprite.index}: ${sprite.rotation}`);
+            if (DEBUG_MODE) f12Log(`Saving ROTATEEFFECT for sprite ${sprite.index}: ${sprite.rotation}`);
+        }
+        if (sprite.mode !== undefined && sprite.mode !== null) {
+            otherCommands.push(`EFFECTMODE ${String(sprite.index).padStart(4)} ${sprite.mode}`);
+            if (DEBUG_MODE) f12Log(`Saving EFFECTMODE for sprite ${sprite.index}: ${sprite.mode}`);
         }
         if (sprite.colorEffectEnabled) {
             otherCommands.push(`COLOREFFECT ${String(sprite.index).padStart(4)} ${sprite.colorEffect.r/255} ${sprite.colorEffect.g/255} ${sprite.colorEffect.b/255} ${sprite.colorEffect.a/255}`);
@@ -1936,7 +2212,7 @@ function updateSpritesList() {
         }
     }
     if (!editingSprite || !spriteFound) {
-        const savedSpriteIndex = localStorage.getItem("ganiEditorSelectedSprite_" + currentTabIndex);
+        const savedSpriteIndex = currentAnimation ? localStorage.getItem("ganiEditorSelectedSprite_" + currentAnimation.id) : null;
         if (savedSpriteIndex !== null) {
             const savedIndex = parseInt(savedSpriteIndex);
             for (const sprite of sortedSprites) {
@@ -1955,16 +2231,68 @@ function updateSpritesList() {
     for (const sprite of sortedSprites) {
         const item = document.createElement("div");
         item.className = "sprite-item";
+        item.draggable = false;
         if (editingSprite && editingSprite.index === sprite.index && editingSprite.type === sprite.type) item.classList.add("selected");
-        item.onclick = () => {
-            selectSprite(sprite);
-            insertPiece = new FramePieceSprite();
-            insertPiece.spriteIndex = sprite.index;
-            insertPiece.spriteName = String(sprite.index);
-            insertPiece.xoffset = -5000;
-            insertPiece.yoffset = -5000;
-            insertPiece.dragOffset = {x: (sprite.width * sprite.xscale) / 2, y: (sprite.height * sprite.yscale) / 2};
-            redraw();
+        let spriteItemDragStart = null;
+        let spriteItemDragging = false;
+        const spriteItemDragHandler = (e) => {
+            if (spriteItemDragStart && !spriteItemDragging) {
+                const dx = e.clientX - spriteItemDragStart.x;
+                const dy = e.clientY - spriteItemDragStart.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                if (distance > 5) {
+                    spriteItemDragging = true;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (!insertPiece || insertPiece.spriteIndex !== sprite.index) {
+                        insertPiece = new FramePieceSprite();
+                        insertPiece.spriteIndex = sprite.index;
+                        insertPiece.spriteName = String(sprite.index);
+                        insertPiece.xoffset = -5000;
+                        insertPiece.yoffset = -5000;
+                        insertPiece.dragOffset = {x: (sprite.width * sprite.xscale) / 2, y: (sprite.height * sprite.yscale) / 2};
+                        redraw();
+                    }
+                }
+            }
+        };
+        const spriteItemMouseUpHandler = (e) => {
+            if (e.button === 0 && spriteItemDragStart) {
+                document.removeEventListener("mousemove", spriteItemDragHandler);
+                document.removeEventListener("mouseup", spriteItemMouseUpHandler);
+                if (!spriteItemDragging) {
+                    insertPiece = new FramePieceSprite();
+                    insertPiece.spriteIndex = sprite.index;
+                    insertPiece.spriteName = String(sprite.index);
+                    insertPiece.xoffset = -5000;
+                    insertPiece.yoffset = -5000;
+                    insertPiece.dragOffset = {x: (sprite.width * sprite.xscale) / 2, y: (sprite.height * sprite.yscale) / 2};
+                    selectSprite(sprite);
+                    redraw();
+                }
+                spriteItemDragStart = null;
+                spriteItemDragging = false;
+            }
+        };
+        item.onmousedown = (e) => {
+            if (e.button === 0) {
+                e.preventDefault();
+                e.stopPropagation();
+                spriteItemDragStart = {x: e.clientX, y: e.clientY};
+                spriteItemDragging = false;
+                document.addEventListener("mousemove", spriteItemDragHandler);
+                document.addEventListener("mouseup", spriteItemMouseUpHandler);
+            }
+        };
+        item.ondragstart = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            return false;
+        };
+        item.ondrag = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            return false;
         };
         item.ondblclick = () => editSprite(sprite);
         item.oncontextmenu = (e) => {
@@ -2005,11 +2333,13 @@ function updateSpritesList() {
                 spriteItemTouchTimer = null;
             }
         }, {passive: true});
-        item.draggable = true;
-        item.ondragstart = (e) => {
-            e.dataTransfer.setData("spriteIndex", sprite.index);
-        };
         const canvas = document.createElement("canvas");
+        canvas.draggable = false;
+        canvas.ondragstart = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            return false;
+        };
         const img = getSpriteImage(sprite);
         const maxSize = 64;
         if (img && sprite.width > 0 && sprite.height > 0) {
@@ -2109,8 +2439,8 @@ function updateSpritesList() {
 
 function selectSprite(sprite) {
     editingSprite = sprite;
-    if (currentTabIndex >= 0 && sprite) {
-        localStorage.setItem("ganiEditorSelectedSprite_" + currentTabIndex, sprite.index.toString());
+    if (currentAnimation && sprite) {
+        localStorage.setItem("ganiEditorSelectedSprite_" + currentAnimation.id, sprite.index.toString());
     }
     updateSpritesList();
     updateSpriteEditor();
@@ -2137,11 +2467,13 @@ function updateSpriteEditor() {
     const yScaleSlider = document.getElementById("yScaleSlider");
     const rotationEl = document.getElementById("rotation");
     const rotationSlider = document.getElementById("rotationSlider");
+    const zoomEl = document.getElementById("zoom");
+    const zoomSlider = document.getElementById("zoomSlider");
+    const spriteMode = document.getElementById("spriteMode");
     const spriteLeft = document.getElementById("spriteLeft");
     const spriteTop = document.getElementById("spriteTop");
     const spriteWidth = document.getElementById("spriteWidth");
     const spriteHeight = document.getElementById("spriteHeight");
-    const colorEffect = document.getElementById("colorEffect");
     const colorSwatch = document.getElementById("colorSwatch");
 
     spriteEditPanel.style.display = "block";
@@ -2152,6 +2484,7 @@ function updateSpriteEditor() {
     const xscale = editingSprite.xscale !== undefined ? editingSprite.xscale : 1.0;
     const yscale = editingSprite.yscale !== undefined ? editingSprite.yscale : 1.0;
     const rotation = editingSprite.rotation !== undefined ? editingSprite.rotation : 0.0;
+    const zoom = (editingSprite.xscale === editingSprite.yscale && editingSprite.xscale !== undefined) ? editingSprite.xscale : 1.0;
     if (editingSprite.xscale === undefined) editingSprite.xscale = 1.0;
     if (editingSprite.yscale === undefined) editingSprite.yscale = 1.0;
     if (editingSprite.rotation === undefined) editingSprite.rotation = 0.0;
@@ -2161,17 +2494,47 @@ function updateSpriteEditor() {
     yScaleSlider.value = yscale;
     rotationEl.value = rotation;
     rotationSlider.value = rotation;
+    if (zoomEl) zoomEl.value = zoom;
+    if (zoomSlider) zoomSlider.value = zoom;
+    if (spriteMode) {
+        if (editingSprite.hasOwnProperty("mode") && editingSprite.mode !== undefined && editingSprite.mode !== null) {
+            spriteMode.value = editingSprite.mode.toString();
+        } else {
+            spriteMode.value = "";
+        }
+        spriteMode.dispatchEvent(new Event('change', { bubbles: true }));
+        const spriteModeWrapper = spriteMode.closest("div[style*='position: relative']");
+        if (spriteModeWrapper) {
+            const buttonText = spriteModeWrapper.querySelector(".custom-dropdown-button span");
+            if (buttonText) {
+                const selectedOption = spriteMode.options[spriteMode.selectedIndex];
+                if (selectedOption) {
+                    buttonText.textContent = selectedOption.text;
+                }
+            }
+        }
+    }
     spriteLeft.value = editingSprite.left;
     spriteTop.value = editingSprite.top;
     spriteWidth.value = editingSprite.width;
     spriteHeight.value = editingSprite.height;
-    colorEffect.checked = editingSprite.colorEffectEnabled;
+    const colorEffectCheckbox = document.getElementById("colorEffectCheckbox");
+    if (colorEffectCheckbox) colorEffectCheckbox.textContent = editingSprite.colorEffectEnabled ? "✓" : " ";
     if (colorSwatch && editingSprite.colorEffect) {
         const c = editingSprite.colorEffect;
         const hex = `#${[c.r, c.g, c.b].map(x => x.toString(16).padStart(2, '0')).join('')}`;
         colorSwatch.value = hex;
     }
+    const colorR = document.getElementById("colorR");
+    const colorG = document.getElementById("colorG");
+    const colorB = document.getElementById("colorB");
+    const colorA = document.getElementById("colorA");
+    if (colorR && editingSprite.colorEffect) colorR.value = editingSprite.colorEffect.r || 255;
+    if (colorG && editingSprite.colorEffect) colorG.value = editingSprite.colorEffect.g || 255;
+    if (colorB && editingSprite.colorEffect) colorB.value = editingSprite.colorEffect.b || 255;
+    if (colorA && editingSprite.colorEffect) colorA.value = editingSprite.colorEffect.a || 255;
     editingSprite.updateBoundingBox();
+    drawSpritePreview();
 }
 
 function updateItemsCombo() {
@@ -2269,6 +2632,13 @@ function updateItemSettings() {
         if (itemXScaleSlider) itemXScaleSlider.disabled = true;
         if (itemYScaleSlider) itemYScaleSlider.disabled = true;
         if (itemRotationSlider) itemRotationSlider.disabled = true;
+        const itemZoom = document.getElementById("itemZoom");
+        const itemZoomSlider = document.getElementById("itemZoomSlider");
+        if (itemZoom) {
+            itemZoom.value = "1.0";
+            itemZoom.disabled = true;
+        }
+        if (itemZoomSlider) itemZoomSlider.disabled = true;
         const itemLayer = document.getElementById("itemLayer");
         if (itemLayer) {
             itemLayer.value = "";
@@ -2301,6 +2671,13 @@ function updateItemSettings() {
         if (itemXScaleSlider) itemXScaleSlider.disabled = true;
         if (itemYScaleSlider) itemYScaleSlider.disabled = true;
         if (itemRotationSlider) itemRotationSlider.disabled = true;
+        const itemZoom = document.getElementById("itemZoom");
+        const itemZoomSlider = document.getElementById("itemZoomSlider");
+        if (itemZoom) {
+            itemZoom.value = "1.0";
+            itemZoom.disabled = true;
+        }
+        if (itemZoomSlider) itemZoomSlider.disabled = true;
         const itemLayer = document.getElementById("itemLayer");
         if (itemLayer) {
             itemLayer.value = "0";
@@ -2320,6 +2697,7 @@ function updateItemSettings() {
         const xscale = piece.xscale !== undefined ? piece.xscale : 1.0;
         const yscale = piece.yscale !== undefined ? piece.yscale : 1.0;
         const rotation = piece.rotation !== undefined ? piece.rotation : 0.0;
+        const zoom = (piece.xscale === piece.yscale && piece.xscale !== undefined) ? piece.xscale : 1.0;
         if (piece.xscale === undefined) piece.xscale = 1.0;
         if (piece.yscale === undefined) piece.yscale = 1.0;
         if (piece.rotation === undefined) piece.rotation = 0.0;
@@ -2346,6 +2724,16 @@ function updateItemSettings() {
         if (itemRotationSlider) {
             itemRotationSlider.value = rotation;
             itemRotationSlider.disabled = false;
+        }
+        const itemZoom = document.getElementById("itemZoom");
+        const itemZoomSlider = document.getElementById("itemZoomSlider");
+        if (itemZoom) {
+            itemZoom.value = zoom;
+            itemZoom.disabled = false;
+        }
+        if (itemZoomSlider) {
+            itemZoomSlider.value = zoom;
+            itemZoomSlider.disabled = false;
         }
         const itemLayer = document.getElementById("itemLayer");
         if (itemLayer) {
@@ -2561,9 +2949,12 @@ function updateSoundsList() {
 
 function updateAnimationSettings() {
     if (!currentAnimation) return;
-    document.getElementById("singleDir").checked = currentAnimation.singleDir;
-    document.getElementById("looped").checked = currentAnimation.looped;
-    document.getElementById("continous").checked = currentAnimation.continous;
+    const singleDirCheckbox = document.getElementById("singleDirCheckbox");
+    const loopedCheckbox = document.getElementById("loopedCheckbox");
+    const continousCheckbox = document.getElementById("continousCheckbox");
+    if (singleDirCheckbox) singleDirCheckbox.textContent = currentAnimation.singleDir ? "✓" : " ";
+    if (loopedCheckbox) loopedCheckbox.textContent = currentAnimation.looped ? "✓" : " ";
+    if (continousCheckbox) continousCheckbox.textContent = currentAnimation.continous ? "✓" : " ";
     document.getElementById("nextAni").value = currentAnimation.nextAni;
 }
 
@@ -2636,7 +3027,14 @@ function updateHistoryMenu() {
         item.style.opacity = i > undoIndex ? "0.5" : "1";
         item.style.backgroundColor = i === undoIndex ? "#4472C4" : "transparent";
         item.style.fontFamily = fontFamily;
-        let displayText = undoStack[i].description || `Action ${i + 1}`;
+        let displayText = undoStack[i].description;
+        if (!displayText && undoStack[i].oldState && undoStack[i].newState) {
+            displayText = generateHistoryDescription(undoStack[i].oldState, undoStack[i].newState);
+            undoStack[i].description = displayText;
+        }
+        if (!displayText) {
+            displayText = `Action ${i + 1}`;
+        }
         if (currentAnimation) {
             displayText = displayText.replace(/Sprite (\d+)/g, (match, indexStr) => {
                 const spriteIndex = parseInt(indexStr);
@@ -2727,14 +3125,17 @@ function updateHistoryMenu() {
     if (btnToolbarUndo) btnToolbarUndo.disabled = undoIndex < 0;
     if (btnToolbarRedo) btnToolbarRedo.disabled = undoIndex >= undoStack.length - 1;
 
-    const historyLoggingToggle = document.getElementById("historyLoggingToggle");
-    if (historyLoggingToggle) {
-        historyLoggingToggle.checked = getCurrentHistoryLoggingEnabled();
-        historyLoggingToggle.onchange = () => {
-            setCurrentHistoryLoggingEnabled(historyLoggingToggle.checked);
+    const historyLoggingToggleCheckbox = document.getElementById("historyLoggingToggleCheckbox");
+    if (historyLoggingToggleCheckbox) {
+        const enabled = getCurrentHistoryLoggingEnabled();
+        historyLoggingToggleCheckbox.textContent = enabled ? "✓" : " ";
+        historyLoggingToggleCheckbox.onclick = () => {
+            const newEnabled = !getCurrentHistoryLoggingEnabled();
+            setCurrentHistoryLoggingEnabled(newEnabled);
+            historyLoggingToggleCheckbox.textContent = newEnabled ? "✓" : " ";
             if (currentAnimation && currentTabIndex >= 0) {
-                localStorage.setItem("ganiEditorHistoryLoggingEnabled_" + currentTabIndex, historyLoggingToggle.checked);
-                currentAnimation.historyLoggingEnabled = historyLoggingToggle.checked;
+                localStorage.setItem("ganiEditorHistoryLoggingEnabled_" + currentTabIndex, newEnabled);
+                currentAnimation.historyLoggingEnabled = newEnabled;
             }
         };
     }
@@ -2806,6 +3207,157 @@ function redo() {
     }
 }
 
+function generateHistoryDescription(oldState, newState) {
+        if (!oldState || !newState) return "Action";
+    const changes = [];
+    const oldFrameCount = oldState.frames?.length || 0;
+    const newFrameCount = newState.frames?.length || 0;
+    if (oldFrameCount !== newFrameCount) {
+        const diff = newFrameCount - oldFrameCount;
+        if (diff > 0) changes.push(`Add ${diff} Frame${diff > 1 ? 's' : ''}`);
+        else changes.push(`Remove ${Math.abs(diff)} Frame${Math.abs(diff) > 1 ? 's' : ''}`);
+    }
+    let piecesAdded = 0;
+    let piecesRemoved = 0;
+    let movedPieces = new Set();
+    if (oldState.frames && newState.frames) {
+        for (let f = 0; f < Math.min(oldState.frames.length, newState.frames.length); f++) {
+            const oldFrame = oldState.frames[f];
+            const newFrame = newState.frames[f];
+            if (oldFrame?.pieces && newFrame?.pieces) {
+                for (let d = 0; d < Math.min(oldFrame.pieces.length, newFrame.pieces.length); d++) {
+                    const oldDir = oldFrame.pieces[d] || [];
+                    const newDir = newFrame.pieces[d] || [];
+                    const oldPieceMap = new Map(oldDir.map(p => [p.id, p]));
+                    const newPieceMap = new Map(newDir.map(p => [p.id, p]));
+                    
+                    for (const [id, newPiece] of newPieceMap) {
+                        const oldPiece = oldPieceMap.get(id);
+                        if (!oldPiece) {
+                            piecesAdded++;
+                        } else if (oldPiece.xoffset !== newPiece.xoffset || oldPiece.yoffset !== newPiece.yoffset ||
+                                   oldPiece.xscale !== newPiece.xscale || oldPiece.yscale !== newPiece.yscale ||
+                                   oldPiece.rotation !== newPiece.rotation) {
+                            movedPieces.add(id);
+                        }
+                    }
+                    for (const [id] of oldPieceMap) {
+                        if (!newPieceMap.has(id)) {
+                            piecesRemoved++;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    const oldSpriteCount = oldState.sprites?.length || 0;
+    const newSpriteCount = newState.sprites?.length || 0;
+    if (oldSpriteCount !== newSpriteCount) {
+        const diff = newSpriteCount - oldSpriteCount;
+        if (diff > 0) changes.push(`Add ${diff} Sprite${diff > 1 ? 's' : ''}`);
+        else changes.push(`Remove ${Math.abs(diff)} Sprite${Math.abs(diff) > 1 ? 's' : ''}`);
+    }
+    let changedSprites = new Set();
+    let attachmentsAdded = 0;
+    let attachmentsRemoved = 0;
+    let attachmentsMoved = 0;
+    if (oldState.sprites && newState.sprites) {
+        const oldSpriteMap = new Map((oldState.sprites || []).map(s => [s.index, s]));
+        const newSpriteMap = new Map((newState.sprites || []).map(s => [s.index, s]));
+        for (const [idx, newSprite] of newSpriteMap) {
+            const oldSprite = oldSpriteMap.get(idx);
+            if (oldSprite) {
+                const oldAttachments = oldSprite.attachedSprites || [];
+                const newAttachments = newSprite.attachedSprites || [];
+                const oldAttachmentStr = JSON.stringify(oldAttachments);
+                const newAttachmentStr = JSON.stringify(newAttachments);
+                if (oldAttachmentStr !== newAttachmentStr) {
+                    if (newAttachments.length > oldAttachments.length) {
+                        attachmentsAdded += newAttachments.length - oldAttachments.length;
+                    } else if (newAttachments.length < oldAttachments.length) {
+                        attachmentsRemoved += oldAttachments.length - newAttachments.length;
+                    } else {
+                        attachmentsMoved++;
+                    }
+                    changedSprites.add(idx);
+                }
+                if (oldSprite.left !== newSprite.left || oldSprite.top !== newSprite.top ||
+                    oldSprite.width !== newSprite.width || oldSprite.height !== newSprite.height ||
+                    oldSprite.xscale !== newSprite.xscale || oldSprite.yscale !== newSprite.yscale ||
+                    oldSprite.rotation !== newSprite.rotation ||
+                    JSON.stringify(oldSprite.colorEffect || {}) !== JSON.stringify(newSprite.colorEffect || {}) ||
+                    oldSprite.mode !== newSprite.mode ||
+                    oldSprite.comment !== newSprite.comment) {
+                    changedSprites.add(idx);
+                }
+            }
+        }
+    }
+    let scaledPieces = 0;
+    let rotatedPieces = 0;
+    for (const pieceId of movedPieces) {
+        if (oldState.frames && newState.frames) {
+            for (let f = 0; f < Math.min(oldState.frames.length, newState.frames.length); f++) {
+                const oldFrame = oldState.frames[f];
+                const newFrame = newState.frames[f];
+                if (oldFrame?.pieces && newFrame?.pieces) {
+                    for (let d = 0; d < Math.min(oldFrame.pieces.length, newFrame.pieces.length); d++) {
+                        const oldDir = oldFrame.pieces[d] || [];
+                        const newDir = newFrame.pieces[d] || [];
+                        const oldPiece = oldDir.find(p => p.id === pieceId);
+                        const newPiece = newDir.find(p => p.id === pieceId);
+                        if (oldPiece && newPiece) {
+                            if (oldPiece.xscale !== newPiece.xscale || oldPiece.yscale !== newPiece.yscale) scaledPieces++;
+                            if (oldPiece.rotation !== newPiece.rotation) rotatedPieces++;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (piecesAdded > 0) changes.push(`Add ${piecesAdded} Piece${piecesAdded > 1 ? 's' : ''}`);
+    if (piecesRemoved > 0) changes.push(`Remove ${piecesRemoved} Piece${piecesRemoved > 1 ? 's' : ''}`);
+    if (attachmentsAdded > 0) changes.push(`Add ${attachmentsAdded} Attachment${attachmentsAdded > 1 ? 's' : ''}`);
+    if (attachmentsRemoved > 0) changes.push(`Remove ${attachmentsRemoved} Attachment${attachmentsRemoved > 1 ? 's' : ''}`);
+    if (attachmentsMoved > 0) changes.push(`Move ${attachmentsMoved} Attachment${attachmentsMoved > 1 ? 's' : ''}`);
+    if (changes.length > 0) {
+        return changes.join(", ");
+    } else if (movedPieces.size > 0) {
+        if (scaledPieces > 0 && rotatedPieces === 0) {
+            return `Scale Piece${scaledPieces > 1 ? 's' : ''}`;
+        } else if (rotatedPieces > 0 && scaledPieces === 0) {
+            return `Rotate Piece${rotatedPieces > 1 ? 's' : ''}`;
+        } else {
+            return `Move Piece${movedPieces.size > 1 ? 's' : ''}`;
+        }
+    } else if (changedSprites.size > 0) {
+        const spriteNames = [];
+        for (const idx of changedSprites) {
+            if (currentAnimation) {
+                const sprite = currentAnimation.getAniSprite(idx, "");
+                if (sprite?.comment) {
+                    spriteNames.push(`"${sprite.comment}"`);
+                } else {
+                    spriteNames.push(`Sprite ${idx}`);
+                }
+            } else {
+                spriteNames.push(`Sprite ${idx}`);
+            }
+        }
+        if (spriteNames.length === 1) {
+            return `Change ${spriteNames[0]}`;
+        } else if (spriteNames.length <= 3) {
+            return `Change ${spriteNames.join(", ")}`;
+        } else {
+            return `Change ${spriteNames.length} Sprites`;
+        }
+    } else if (oldState.currentFrame !== newState.currentFrame) {
+        return `Change Frame`;
+    } else {
+        return "Action";
+    }
+}
+
 function serializeAnimationState() {
     if (!currentAnimation) return null;
     const state = {
@@ -2855,6 +3407,7 @@ function serializeAnimationState() {
             rotation: s.rotation,
             colorEffectEnabled: s.colorEffectEnabled,
             colorEffect: s.colorEffect ? {r: s.colorEffect.r, g: s.colorEffect.g, b: s.colorEffect.b, a: s.colorEffect.a} : {r: 255, g: 255, b: 255, a: 255},
+            ...(s.hasOwnProperty("mode") && s.mode !== undefined && s.mode !== null ? {mode: s.mode} : {}),
             attachedSprites: (s.attachedSprites || []).map(a => ({
                 index: a.index,
                 offset: a.offset ? {x: a.offset.x, y: a.offset.y} : {x: 0, y: 0}
@@ -2925,6 +3478,11 @@ function restoreAnimationState(state) {
         sprite.colorEffect = sData.colorEffect ? {...sData.colorEffect} : {r: 255, g: 255, b: 255, a: 255};
         sprite.attachedSprites = sData.attachedSprites || [];
         sprite.m_drawIndex = sData.m_drawIndex || 0;
+        if (sData.mode !== undefined && sData.mode !== null) {
+            sprite.mode = sData.mode;
+        } else {
+            delete sprite.mode;
+        }
         sprite.updateBoundingBox();
         currentAnimation.sprites.set(sprite.index, sprite);
     });
@@ -2950,8 +3508,11 @@ function restoreAnimationState(state) {
             }
         }
     }
+    const previousEditingSpriteIndex = editingSprite ? editingSprite.index : null;
     editingSprite = null;
-    if (currentAnimation.sprites.size > 0) {
+    if (previousEditingSpriteIndex !== null && currentAnimation.sprites.has(previousEditingSpriteIndex)) {
+        editingSprite = currentAnimation.sprites.get(previousEditingSpriteIndex);
+    } else if (currentAnimation.sprites.size > 0) {
         editingSprite = Array.from(currentAnimation.sprites.values())[0];
     }
     updateSpritesList();
@@ -2967,21 +3528,20 @@ function saveUndoStack() {
     try {
         const undoStack = getCurrentUndoStack();
         const undoIndex = getCurrentUndoIndex();
-        const maxSavedUndo = 10;
+        const maxSavedUndo = 50;
         const startIndex = Math.max(0, undoStack.length - maxSavedUndo);
         const undoData = {
-            animationIndex: animations.indexOf(currentAnimation),
+            animationId: currentAnimation.id,
             undoIndex: undoIndex,
             commands: undoStack.slice(startIndex).map(cmd => ({
-                description: cmd.description,
                 oldState: cmd.oldState || null,
                 newState: cmd.newState || null
             }))
         };
-        localStorage.setItem("ganiEditorUndoStack_" + animations.indexOf(currentAnimation), JSON.stringify(undoData));
+        localStorage.setItem("ganiEditorUndoStack_" + currentAnimation.id, JSON.stringify(undoData));
     } catch (e) {
         if (e.name === "QuotaExceededError" || e.message.includes("quota")) {
-            console.warn("localStorage quota exceeded, undo history will not persist across sessions");
+            f12Log("localStorage quota exceeded, undo history will not persist across sessions");
         } else {
             console.error("Failed to save undo stack:", e);
         }
@@ -2991,15 +3551,14 @@ function saveUndoStack() {
 function restoreUndoStack() {
     if (!currentAnimation) return;
     try {
-        const animationIndex = animations.indexOf(currentAnimation);
-        const undoDataStr = localStorage.getItem("ganiEditorUndoStack_" + animationIndex);
+        const undoDataStr = localStorage.getItem("ganiEditorUndoStack_" + currentAnimation.id);
         if (!undoDataStr) {
             if (!currentAnimation.undoStack) currentAnimation.undoStack = [];
             if (currentAnimation.undoIndex === undefined) currentAnimation.undoIndex = -1;
             return;
         }
         const undoData = JSON.parse(undoDataStr);
-        if (undoData.animationIndex !== animationIndex) {
+        if (undoData.animationId && undoData.animationId !== currentAnimation.id) {
             if (!currentAnimation.undoStack) currentAnimation.undoStack = [];
             if (currentAnimation.undoIndex === undefined) currentAnimation.undoIndex = -1;
             return;
@@ -3007,16 +3566,17 @@ function restoreUndoStack() {
         currentAnimation.undoStack = undoData.commands.filter(cmdData => cmdData.oldState && cmdData.newState).map(cmdData => {
             const oldState = cmdData.oldState;
             const newState = cmdData.newState;
+            const description = cmdData.description || generateHistoryDescription(oldState, newState);
             return {
-                description: cmdData.description,
+                description: description,
                 oldState: oldState,
                 newState: newState,
                 undo: () => {
-                    f12Log(`Restore undo: ${cmdData.description}`);
+                    f12Log(`Restore undo: ${description}`);
                     restoreAnimationState(oldState);
                 },
                 redo: () => {
-                    f12Log(`Restore redo: ${cmdData.description}`);
+                    f12Log(`Restore redo: ${description}`);
                     restoreAnimationState(newState);
                 }
             };
@@ -3076,13 +3636,13 @@ function initNewAnimation() {
 }
 
 function saveCurrentFrame() {
-    if (currentAnimation && currentTabIndex >= 0) {
-        localStorage.setItem("ganiEditorCurrentFrame_" + currentTabIndex, currentFrame.toString());
+    if (currentAnimation) {
+        localStorage.setItem("ganiEditorCurrentFrame_" + currentAnimation.id, currentFrame.toString());
     }
 }
 function restoreCurrentFrame() {
-    if (currentAnimation && currentTabIndex >= 0) {
-        const savedFrame = localStorage.getItem("ganiEditorCurrentFrame_" + currentTabIndex);
+    if (currentAnimation) {
+        const savedFrame = localStorage.getItem("ganiEditorCurrentFrame_" + currentAnimation.id);
         if (savedFrame !== null) {
             const frameIndex = parseInt(savedFrame) || 0;
             currentFrame = Math.min(Math.max(0, frameIndex), currentAnimation.frames.length - 1);
@@ -3100,23 +3660,26 @@ function switchTab(index) {
     if (!currentAnimation.undoStack) currentAnimation.undoStack = [];
     if (currentAnimation.undoIndex === undefined) currentAnimation.undoIndex = -1;
     if (currentAnimation.historyLoggingEnabled === undefined) {
-        const savedValue = localStorage.getItem("ganiEditorHistoryLoggingEnabled_" + index);
+        const savedValue = localStorage.getItem("ganiEditorHistoryLoggingEnabled_" + currentAnimation.id);
         currentAnimation.historyLoggingEnabled = savedValue !== null ? savedValue === "true" : true;
     } else {
-        const savedValue = localStorage.getItem("ganiEditorHistoryLoggingEnabled_" + index);
+        const savedValue = localStorage.getItem("ganiEditorHistoryLoggingEnabled_" + currentAnimation.id);
         if (savedValue !== null) {
             currentAnimation.historyLoggingEnabled = savedValue === "true";
         }
     }
     restoreUndoStack();
-    const historyLoggingToggle = document.getElementById("historyLoggingToggle");
-    if (historyLoggingToggle) {
-        historyLoggingToggle.checked = getCurrentHistoryLoggingEnabled();
-        historyLoggingToggle.onchange = () => {
-            setCurrentHistoryLoggingEnabled(historyLoggingToggle.checked);
+    const historyLoggingToggleCheckbox = document.getElementById("historyLoggingToggleCheckbox");
+    if (historyLoggingToggleCheckbox) {
+        const enabled = getCurrentHistoryLoggingEnabled();
+        historyLoggingToggleCheckbox.textContent = enabled ? "✓" : " ";
+        historyLoggingToggleCheckbox.onclick = () => {
+            const newEnabled = !getCurrentHistoryLoggingEnabled();
+            setCurrentHistoryLoggingEnabled(newEnabled);
+            historyLoggingToggleCheckbox.textContent = newEnabled ? "✓" : " ";
             if (currentAnimation && currentTabIndex >= 0) {
-                localStorage.setItem("ganiEditorHistoryLoggingEnabled_" + currentTabIndex, historyLoggingToggle.checked);
-                currentAnimation.historyLoggingEnabled = historyLoggingToggle.checked;
+                localStorage.setItem("ganiEditorHistoryLoggingEnabled_" + currentTabIndex, newEnabled);
+                currentAnimation.historyLoggingEnabled = newEnabled;
             }
         };
     }
@@ -3207,36 +3770,14 @@ function closeTab(index) {
     if (tabToClose) {
         tabToClose.undoStack = [];
         tabToClose.undoIndex = -1;
+        localStorage.removeItem("ganiEditorUndoStack_" + tabToClose.id);
+        localStorage.removeItem("ganiEditorSelectedSprite_" + tabToClose.id);
+        localStorage.removeItem("ganiEditorHistoryLoggingEnabled_" + tabToClose.id);
+        localStorage.removeItem("ganiEditorCurrentFrame_" + tabToClose.id);
+        localStorage.removeItem("selectedSpriteIndex_" + tabToClose.id);
+        localStorage.removeItem("selectedSpriteType_" + tabToClose.id);
     }
-    localStorage.removeItem("ganiEditorSelectedSprite_" + index);
-    localStorage.removeItem("ganiEditorHistoryLoggingEnabled_" + index);
-    localStorage.removeItem("selectedSpriteIndex_" + index);
-    localStorage.removeItem("selectedSpriteType_" + index);
     animations.splice(index, 1);
-    for (let i = index; i < animations.length; i++) {
-        const oldIndex = i + 1;
-        const newIndex = i;
-        const spriteKey = localStorage.getItem("ganiEditorSelectedSprite_" + oldIndex);
-        const historyKey = localStorage.getItem("ganiEditorHistoryLoggingEnabled_" + oldIndex);
-        const spriteIndexKey = localStorage.getItem("selectedSpriteIndex_" + oldIndex);
-        const spriteTypeKey = localStorage.getItem("selectedSpriteType_" + oldIndex);
-        if (spriteKey !== null) {
-            localStorage.setItem("ganiEditorSelectedSprite_" + newIndex, spriteKey);
-            localStorage.removeItem("ganiEditorSelectedSprite_" + oldIndex);
-        }
-        if (historyKey !== null) {
-            localStorage.setItem("ganiEditorHistoryLoggingEnabled_" + newIndex, historyKey);
-            localStorage.removeItem("ganiEditorHistoryLoggingEnabled_" + oldIndex);
-        }
-        if (spriteIndexKey !== null) {
-            localStorage.setItem("selectedSpriteIndex_" + newIndex, spriteIndexKey);
-            localStorage.removeItem("selectedSpriteIndex_" + oldIndex);
-        }
-        if (spriteTypeKey !== null) {
-            localStorage.setItem("selectedSpriteType_" + newIndex, spriteTypeKey);
-            localStorage.removeItem("selectedSpriteType_" + oldIndex);
-        }
-    }
     if (animations.length === 0) {
         currentAnimation = null;
         currentTabIndex = -1;
@@ -3416,121 +3957,9 @@ function updateTabDragTarget(clientX) {
 function handleTabDrop(sourceIndex) {
     if (dragTabTargetIndex < 0 || dragTabTargetIndex > animations.length || dragTabTargetIndex === sourceIndex) return;
     if (dragTabTargetIndex === animations.length) dragTabTargetIndex = animations.length - 1;
-    const oldTabOrder = animations.slice();
     const tabToMove = animations[sourceIndex];
-    const sourceSpriteKey = localStorage.getItem("ganiEditorSelectedSprite_" + sourceIndex);
-    const sourceHistoryKey = localStorage.getItem("ganiEditorHistoryLoggingEnabled_" + sourceIndex);
-    const sourceSpriteIndexKey = localStorage.getItem("selectedSpriteIndex_" + sourceIndex);
-    const sourceSpriteTypeKey = localStorage.getItem("selectedSpriteType_" + sourceIndex);
     animations.splice(sourceIndex, 1);
     animations.splice(dragTabTargetIndex, 0, tabToMove);
-    if (sourceIndex < dragTabTargetIndex) {
-        for (let i = sourceIndex; i < dragTabTargetIndex; i++) {
-            const oldIndex = i + 1;
-            const newIndex = i;
-            const spriteKey = localStorage.getItem("ganiEditorSelectedSprite_" + oldIndex);
-            const historyKey = localStorage.getItem("ganiEditorHistoryLoggingEnabled_" + oldIndex);
-            const spriteIndexKey = localStorage.getItem("selectedSpriteIndex_" + oldIndex);
-            const spriteTypeKey = localStorage.getItem("selectedSpriteType_" + oldIndex);
-            if (spriteKey !== null) {
-                localStorage.setItem("ganiEditorSelectedSprite_" + newIndex, spriteKey);
-                localStorage.removeItem("ganiEditorSelectedSprite_" + oldIndex);
-            } else {
-                localStorage.removeItem("ganiEditorSelectedSprite_" + newIndex);
-            }
-            if (historyKey !== null) {
-                localStorage.setItem("ganiEditorHistoryLoggingEnabled_" + newIndex, historyKey);
-                localStorage.removeItem("ganiEditorHistoryLoggingEnabled_" + oldIndex);
-            } else {
-                localStorage.removeItem("ganiEditorHistoryLoggingEnabled_" + newIndex);
-            }
-            if (spriteIndexKey !== null) {
-                localStorage.setItem("selectedSpriteIndex_" + newIndex, spriteIndexKey);
-                localStorage.removeItem("selectedSpriteIndex_" + oldIndex);
-            } else {
-                localStorage.removeItem("selectedSpriteIndex_" + newIndex);
-            }
-            if (spriteTypeKey !== null) {
-                localStorage.setItem("selectedSpriteType_" + newIndex, spriteTypeKey);
-                localStorage.removeItem("selectedSpriteType_" + oldIndex);
-            } else {
-                localStorage.removeItem("selectedSpriteType_" + newIndex);
-            }
-        }
-        if (sourceSpriteKey !== null) {
-            localStorage.setItem("ganiEditorSelectedSprite_" + dragTabTargetIndex, sourceSpriteKey);
-        } else {
-            localStorage.removeItem("ganiEditorSelectedSprite_" + dragTabTargetIndex);
-        }
-        if (sourceHistoryKey !== null) {
-            localStorage.setItem("ganiEditorHistoryLoggingEnabled_" + dragTabTargetIndex, sourceHistoryKey);
-        } else {
-            localStorage.removeItem("ganiEditorHistoryLoggingEnabled_" + dragTabTargetIndex);
-        }
-        if (sourceSpriteIndexKey !== null) {
-            localStorage.setItem("selectedSpriteIndex_" + dragTabTargetIndex, sourceSpriteIndexKey);
-        } else {
-            localStorage.removeItem("selectedSpriteIndex_" + dragTabTargetIndex);
-        }
-        if (sourceSpriteTypeKey !== null) {
-            localStorage.setItem("selectedSpriteType_" + dragTabTargetIndex, sourceSpriteTypeKey);
-        } else {
-            localStorage.removeItem("selectedSpriteType_" + dragTabTargetIndex);
-        }
-    } else if (sourceIndex > dragTabTargetIndex) {
-        for (let i = dragTabTargetIndex; i < sourceIndex; i++) {
-            const oldIndex = i;
-            const newIndex = i + 1;
-            const spriteKey = localStorage.getItem("ganiEditorSelectedSprite_" + oldIndex);
-            const historyKey = localStorage.getItem("ganiEditorHistoryLoggingEnabled_" + oldIndex);
-            const spriteIndexKey = localStorage.getItem("selectedSpriteIndex_" + oldIndex);
-            const spriteTypeKey = localStorage.getItem("selectedSpriteType_" + oldIndex);
-            if (spriteKey !== null) {
-                localStorage.setItem("ganiEditorSelectedSprite_" + newIndex, spriteKey);
-                localStorage.removeItem("ganiEditorSelectedSprite_" + oldIndex);
-            } else {
-                localStorage.removeItem("ganiEditorSelectedSprite_" + newIndex);
-            }
-            if (historyKey !== null) {
-                localStorage.setItem("ganiEditorHistoryLoggingEnabled_" + newIndex, historyKey);
-                localStorage.removeItem("ganiEditorHistoryLoggingEnabled_" + oldIndex);
-            } else {
-                localStorage.removeItem("ganiEditorHistoryLoggingEnabled_" + newIndex);
-            }
-            if (spriteIndexKey !== null) {
-                localStorage.setItem("selectedSpriteIndex_" + newIndex, spriteIndexKey);
-                localStorage.removeItem("selectedSpriteIndex_" + oldIndex);
-            } else {
-                localStorage.removeItem("selectedSpriteIndex_" + newIndex);
-            }
-            if (spriteTypeKey !== null) {
-                localStorage.setItem("selectedSpriteType_" + newIndex, spriteTypeKey);
-                localStorage.removeItem("selectedSpriteType_" + oldIndex);
-            } else {
-                localStorage.removeItem("selectedSpriteType_" + newIndex);
-            }
-        }
-        if (sourceSpriteKey !== null) {
-            localStorage.setItem("ganiEditorSelectedSprite_" + dragTabTargetIndex, sourceSpriteKey);
-        } else {
-            localStorage.removeItem("ganiEditorSelectedSprite_" + dragTabTargetIndex);
-        }
-        if (sourceHistoryKey !== null) {
-            localStorage.setItem("ganiEditorHistoryLoggingEnabled_" + dragTabTargetIndex, sourceHistoryKey);
-        } else {
-            localStorage.removeItem("ganiEditorHistoryLoggingEnabled_" + dragTabTargetIndex);
-        }
-        if (sourceSpriteIndexKey !== null) {
-            localStorage.setItem("selectedSpriteIndex_" + dragTabTargetIndex, sourceSpriteIndexKey);
-        } else {
-            localStorage.removeItem("selectedSpriteIndex_" + dragTabTargetIndex);
-        }
-        if (sourceSpriteTypeKey !== null) {
-            localStorage.setItem("selectedSpriteType_" + dragTabTargetIndex, sourceSpriteTypeKey);
-        } else {
-            localStorage.removeItem("selectedSpriteType_" + dragTabTargetIndex);
-        }
-    }
     const oldCurrentTabIndex = currentTabIndex;
     if (currentTabIndex === sourceIndex) {
         currentTabIndex = dragTabTargetIndex;
@@ -3596,7 +4025,7 @@ function showTabContextMenu(e, tabIndex) {
 
 let saveSessionDebounceTimer = null;
 function saveSession(immediate = false) {
-    if (DEBUG_MODE) console.log(`saveSession called with immediate=${immediate}`);
+    if (DEBUG_MODE) f12Log(`saveSession called with immediate=${immediate}`);
     if (saveSessionDebounceTimer) {
         clearTimeout(saveSessionDebounceTimer);
         saveSessionDebounceTimer = null;
@@ -3611,6 +4040,7 @@ function saveSession(immediate = false) {
                         fileName: ani.fileName,
                         fullPath: ani.fullPath,
                         modified: ani.modified,
+                        id: ani.id,
                         content: content
                     };
                 }),
@@ -3674,6 +4104,9 @@ async function restoreSession() {
                         f12Log("Restored animation defaults: " + JSON.stringify(Array.from(ani.defaultImages.entries())));
                         ani.fileName = aniData.fileName || "";
                         ani.fullPath = aniData.fullPath || "";
+                        if (aniData.id) {
+                            ani.id = aniData.id;
+                        }
                         ensureShadowSprite(ani);
                         animations.push(ani);
                     } catch (e) {
@@ -3690,11 +4123,20 @@ async function restoreSession() {
                 currentAnimation = animations[currentTabIndex];
             }
             for (let i = 0; i < animations.length; i++) {
-                    const savedValue = localStorage.getItem("ganiEditorHistoryLoggingEnabled_" + i);
+                const ani = animations[i];
+                let savedValue = localStorage.getItem("ganiEditorHistoryLoggingEnabled_" + ani.id);
+                if (!savedValue && session.animations[i] && session.animations[i].id) {
+                    const oldValue = localStorage.getItem("ganiEditorHistoryLoggingEnabled_" + i);
+                    if (oldValue) {
+                        localStorage.setItem("ganiEditorHistoryLoggingEnabled_" + ani.id, oldValue);
+                        localStorage.removeItem("ganiEditorHistoryLoggingEnabled_" + i);
+                        savedValue = oldValue;
+                    }
+                }
                 if (savedValue !== null) {
-                    animations[i].historyLoggingEnabled = savedValue === "true";
-                } else if (animations[i].historyLoggingEnabled === undefined) {
-                    animations[i].historyLoggingEnabled = true;
+                    ani.historyLoggingEnabled = savedValue === "true";
+                } else if (ani.historyLoggingEnabled === undefined) {
+                    ani.historyLoggingEnabled = true;
                 }
             }
             if (currentAnimation) {
@@ -3714,9 +4156,10 @@ async function restoreSession() {
             drawTimeline();
             updateFrameInfo();
             restoreUndoStack();
-            const historyLoggingToggle = document.getElementById("historyLoggingToggle");
-            if (historyLoggingToggle && currentAnimation) {
-                historyLoggingToggle.checked = getCurrentHistoryLoggingEnabled();
+            const historyLoggingToggleCheckbox = document.getElementById("historyLoggingToggleCheckbox");
+            if (historyLoggingToggleCheckbox && currentAnimation) {
+                const enabled = getCurrentHistoryLoggingEnabled();
+                historyLoggingToggleCheckbox.textContent = enabled ? "✓" : " ";
             }
             updateHistoryMenu();
             redraw();
@@ -3937,7 +4380,7 @@ window.addEventListener("load", async () => {
             }
         }, 200);
     }
-    if (DEBUG_MODE) console.log("Background image loading complete");
+    if (DEBUG_MODE) f12Log("Background image loading complete");
     const spriteList = document.getElementById("spritesList");
     const spriteEditPanel = document.getElementById("spriteEditPanel");
     const spriteSplitterHandle = document.getElementById("spriteSplitterHandle");
@@ -4425,9 +4868,12 @@ window.addEventListener("load", async () => {
         });
     };
     document.getElementById("btnReset").onclick = () => {
-        showConfirmDialog("Reset the editor to default state? This will reset zoom, pan, selections, UI layout, and all settings.", (confirmed) => {
+        showConfirmDialog("Reset the editor to default state? This will reset zoom, pan, selections, UI layout, and all settings.", (confirmed, clearStorage) => {
             if (confirmed) {
-                zoomLevel = 3;
+                if (clearStorage) {
+                    localStorage.clear();
+                }
+                zoomLevel = 6;
                 panX = 0;
                 panY = 0;
                 backgroundColor = "#006400";
@@ -4453,6 +4899,8 @@ window.addEventListener("load", async () => {
                 undoStack = [];
                 undoIndex = -1;
                 localStorage.setItem("mainCanvasZoom", zoomLevel);
+                const zoomDisplay = document.getElementById("mainCanvasZoomLevel");
+                if (zoomDisplay) zoomDisplay.textContent = (zoomFactors[zoomLevel] || 1.0).toFixed(1) + "x";
                 localStorage.setItem("editorFont", "chevyray");
                 localStorage.setItem("editorFontSize", "12");
                 localStorage.setItem("editorFontStyle", "normal");
@@ -4463,7 +4911,7 @@ window.addEventListener("load", async () => {
                 localStorage.setItem("ganiEditorColorScheme", "default");
                 location.reload();
             }
-        });
+        }, true);
     };
     document.getElementById("directionCombo").onchange = (e) => {
         currentDir = ["UP", "LEFT", "DOWN", "RIGHT"].indexOf(e.target.value);
@@ -4563,6 +5011,25 @@ window.addEventListener("load", async () => {
         () => {
             const piece = getCurrentPiece();
             return piece ? `Change ${getSpriteName(piece)} Rotation` : "Change Item Rotation";
+        }
+    );
+    createSliderSync("itemZoom", "itemZoomSlider",
+        () => {
+            const piece = getCurrentPiece();
+            if (!piece) return 1.0;
+            return (piece.xscale === piece.yscale && piece.xscale !== undefined) ? piece.xscale : 1.0;
+        },
+        (val) => {
+            const piece = getCurrentPiece();
+            if (piece) {
+                piece.xscale = val;
+                piece.yscale = val;
+            }
+        },
+        () => { redraw(); saveSession(); },
+        () => {
+            const piece = getCurrentPiece();
+            return piece ? `Change ${getSpriteName(piece)} Zoom` : "Change Item Zoom";
         }
     );
 
@@ -4721,6 +5188,44 @@ window.addEventListener("load", async () => {
         () => { redraw(); drawSpritePreview(); saveSession(true); },
         `Change ${editingSprite.comment ? `"${editingSprite.comment}"` : `Sprite ${editingSprite.index}`} Rotation`
     );
+    createSliderSync("zoom", "zoomSlider",
+        () => {
+            if (!editingSprite) return 1.0;
+            return (editingSprite.xscale === editingSprite.yscale && editingSprite.xscale !== undefined) ? editingSprite.xscale : 1.0;
+        },
+        (val) => {
+            if (editingSprite) {
+                editingSprite.xscale = val;
+                editingSprite.yscale = val;
+                editingSprite.updateBoundingBox();
+            }
+        },
+        () => { redraw(); drawSpritePreview(); saveSession(true); },
+        () => `Change ${editingSprite?.comment ? `"${editingSprite.comment}"` : `Sprite ${editingSprite?.index}`} Zoom`
+    );
+    document.getElementById("spriteMode").onchange = (e) => {
+        if (editingSprite) {
+            const oldState = serializeAnimationState();
+            const modeValue = e.target.value;
+            if (modeValue === "") {
+                delete editingSprite.mode;
+            } else {
+                editingSprite.mode = parseInt(modeValue);
+            }
+            const newState = serializeAnimationState();
+            const spriteName = editingSprite.comment ? `"${editingSprite.comment}"` : `Sprite ${editingSprite.index}`;
+            addUndoCommand({
+                description: `Change ${spriteName} Mode`,
+                oldState: oldState,
+                newState: newState,
+                undo: () => restoreAnimationState(oldState),
+                redo: () => restoreAnimationState(newState)
+            });
+            redraw();
+            drawSpritePreview();
+            saveSession(true);
+        }
+    };
     document.getElementById("spriteLeft").onchange = (e) => {
         if (editingSprite) {
             const oldState = serializeAnimationState();
@@ -4795,24 +5300,28 @@ window.addEventListener("load", async () => {
             saveSession(true);
         }
     };
-    document.getElementById("colorEffect").onchange = (e) => {
-        if (editingSprite) {
-            const oldState = serializeAnimationState();
-            editingSprite.colorEffectEnabled = e.target.checked;
-            const newState = serializeAnimationState();
-            const spriteName = editingSprite.comment ? `"${editingSprite.comment}"` : `Sprite ${editingSprite.index}`;
-            addUndoCommand({
-                description: `Change ${spriteName} Color Effect`,
-                oldState: oldState,
-                newState: newState,
-                undo: () => restoreAnimationState(oldState),
-                redo: () => restoreAnimationState(newState)
-            });
-            redraw();
-            drawSpritePreview();
-            saveSession(true);
-        }
-    };
+    const colorEffectCheckbox = document.getElementById("colorEffectCheckbox");
+    if (colorEffectCheckbox) {
+        colorEffectCheckbox.onclick = () => {
+            if (editingSprite) {
+                const oldState = serializeAnimationState();
+                editingSprite.colorEffectEnabled = !editingSprite.colorEffectEnabled;
+                colorEffectCheckbox.textContent = editingSprite.colorEffectEnabled ? "✓" : " ";
+                const newState = serializeAnimationState();
+                const spriteName = editingSprite.comment ? `"${editingSprite.comment}"` : `Sprite ${editingSprite.index}`;
+                addUndoCommand({
+                    description: `Change ${spriteName} Color Effect`,
+                    oldState: oldState,
+                    newState: newState,
+                    undo: () => restoreAnimationState(oldState),
+                    redo: () => restoreAnimationState(newState)
+                });
+                redraw();
+                drawSpritePreview();
+                saveSession(true);
+            }
+        };
+    }
     document.getElementById("colorSwatch").onchange = (e) => {
         if (!editingSprite) return;
         const oldState = serializeAnimationState();
@@ -4821,6 +5330,12 @@ window.addEventListener("load", async () => {
         const g = parseInt(hex.substr(3,2), 16);
         const b = parseInt(hex.substr(5,2), 16);
         editingSprite.colorEffect = {r, g, b, a: editingSprite.colorEffect.a || 255};
+        const colorR = document.getElementById("colorR");
+        const colorG = document.getElementById("colorG");
+        const colorB = document.getElementById("colorB");
+        if (colorR) colorR.value = r;
+        if (colorG) colorG.value = g;
+        if (colorB) colorB.value = b;
         const newState = serializeAnimationState();
         const spriteName = editingSprite.comment ? `"${editingSprite.comment}"` : `Sprite ${editingSprite.index}`;
         addUndoCommand({
@@ -4834,6 +5349,41 @@ window.addEventListener("load", async () => {
         drawSpritePreview();
         saveSession();
     };
+    const updateColorFromRGB = () => {
+        if (!editingSprite) return;
+        const colorR = document.getElementById("colorR");
+        const colorG = document.getElementById("colorG");
+        const colorB = document.getElementById("colorB");
+        const colorA = document.getElementById("colorA");
+        const colorSwatch = document.getElementById("colorSwatch");
+        if (!colorR || !colorG || !colorB) return;
+        const oldState = serializeAnimationState();
+        const r = Math.max(0, Math.min(255, parseInt(colorR.value) || 255));
+        const g = Math.max(0, Math.min(255, parseInt(colorG.value) || 255));
+        const b = Math.max(0, Math.min(255, parseInt(colorB.value) || 255));
+        const a = colorA ? Math.max(0, Math.min(255, parseInt(colorA.value) || 255)) : (editingSprite.colorEffect.a || 255);
+        editingSprite.colorEffect = {r, g, b, a};
+        if (colorSwatch) {
+            const hex = `#${[r, g, b].map(x => x.toString(16).padStart(2, '0')).join('')}`;
+            colorSwatch.value = hex;
+        }
+        const newState = serializeAnimationState();
+        const spriteName = editingSprite.comment ? `"${editingSprite.comment}"` : `Sprite ${editingSprite.index}`;
+        addUndoCommand({
+            description: `Change ${spriteName} Color`,
+            oldState: oldState,
+            newState: newState,
+            undo: () => restoreAnimationState(oldState),
+            redo: () => restoreAnimationState(newState)
+        });
+        redraw();
+        drawSpritePreview();
+        saveSession();
+    };
+    if (document.getElementById("colorR")) document.getElementById("colorR").onchange = updateColorFromRGB;
+    if (document.getElementById("colorG")) document.getElementById("colorG").onchange = updateColorFromRGB;
+    if (document.getElementById("colorB")) document.getElementById("colorB").onchange = updateColorFromRGB;
+    if (document.getElementById("colorA")) document.getElementById("colorA").onchange = updateColorFromRGB;
     document.getElementById("colorSwatch").onclick = (e) => {
         if (e.target.type === "color") {
             e.target.click();
@@ -4946,6 +5496,28 @@ window.addEventListener("load", async () => {
     document.getElementById("btnOnionSkin").onclick = (e) => {
         onionSkinEnabled = !onionSkinEnabled;
         e.target.closest("button").classList.toggle("active", onionSkinEnabled);
+        redraw();
+    };
+    const btnSplitView = document.getElementById("btnSplitView");
+    if (btnSplitView) {
+        btnSplitView.classList.toggle("active", splitViewEnabled);
+        const btnMirrored = document.getElementById("btnMirroredActions");
+        if (btnMirrored) btnMirrored.style.display = splitViewEnabled ? "" : "none";
+    }
+    document.getElementById("btnSplitView").onclick = (e) => {
+        if (currentAnimation && currentAnimation.singleDir) return;
+        splitViewEnabled = !splitViewEnabled;
+        localStorage.setItem("ganiEditorSplitView", splitViewEnabled ? "true" : "false");
+        e.target.closest("button").classList.toggle("active", splitViewEnabled);
+        const btnMirrored = document.getElementById("btnMirroredActions");
+        if (btnMirrored) btnMirrored.style.display = splitViewEnabled ? "" : "none";
+        if (!splitViewEnabled) mirroredActionsEnabled = false;
+        if (btnMirrored) btnMirrored.classList.remove("active");
+        redraw();
+    };
+    document.getElementById("btnMirroredActions").onclick = (e) => {
+        mirroredActionsEnabled = !mirroredActionsEnabled;
+        e.target.closest("button").classList.toggle("active", mirroredActionsEnabled);
         redraw();
     };
     document.getElementById("btnUndo").onclick = undo;
@@ -5497,6 +6069,110 @@ window.addEventListener("load", async () => {
                 updateHotkeysDialog();
                 hotkeysDialog.style.display = "flex";
             }
+        } else if (e.altKey && e.key === "z") {
+            e.preventDefault();
+            const leftPanel = document.querySelector(".left-panel");
+            const rightPanel = document.querySelector(".right-panel");
+            const timelineContainer = document.querySelector(".timeline-container");
+            const timelineView = document.querySelector(".timeline-view");
+            const toolbar = document.querySelector(".toolbar");
+            const leftVisible = leftPanel && leftPanel.style.display !== "none" && leftPanel.style.visibility !== "hidden";
+            const rightVisible = rightPanel && rightPanel.style.display !== "none" && rightPanel.style.visibility !== "hidden";
+            let timelineVisible = localStorage.getItem("timelineVisible");
+            if (timelineVisible === null) timelineVisible = "true";
+            timelineVisible = timelineVisible !== "false";
+            let toolbarVisible = localStorage.getItem("toolbarVisible");
+            if (toolbarVisible === null) toolbarVisible = "true";
+            toolbarVisible = toolbarVisible !== "false";
+            const toolbarDisplay = toolbar && toolbar.style.display !== "none" && toolbar.style.visibility !== "hidden";
+            const allVisible = (toolbarDisplay && toolbarVisible) && leftVisible && rightVisible && timelineVisible;
+            if (toolbar) {
+                if (allVisible) {
+                    toolbar.style.setProperty("display", "none", "important");
+                    toolbar.style.setProperty("visibility", "hidden", "important");
+                    toolbar.style.setProperty("opacity", "0", "important");
+                    localStorage.setItem("toolbarVisible", "false");
+                } else {
+                    toolbar.style.display = "flex";
+                    toolbar.style.visibility = "visible";
+                    toolbar.style.opacity = "1";
+                    localStorage.setItem("toolbarVisible", "true");
+                }
+            }
+            if (leftPanel) {
+                if (allVisible) {
+                    leftPanel.style.display = "none";
+                    leftPanel.style.visibility = "hidden";
+                    localStorage.setItem("leftPanelVisible", "false");
+                } else {
+                    leftPanel.style.display = "flex";
+                    leftPanel.style.visibility = "visible";
+                    localStorage.setItem("leftPanelVisible", "true");
+                }
+                resizeCanvas();
+            }
+            if (rightPanel) {
+                if (allVisible) {
+                    rightPanel.style.display = "none";
+                    rightPanel.style.visibility = "hidden";
+                    localStorage.setItem("rightPanelVisible", "false");
+                } else {
+                    rightPanel.style.display = "flex";
+                    rightPanel.style.visibility = "visible";
+                    localStorage.setItem("rightPanelVisible", "true");
+                }
+                resizeCanvas();
+            }
+            if (timelineContainer) {
+                const canvasTimelineSplitter = document.getElementById("canvasTimelineSplitter");
+                const mainSplitter = document.getElementById("mainSplitter");
+                if (allVisible) {
+                    timelineContainer.style.setProperty("display", "none", "important");
+                    timelineContainer.style.setProperty("visibility", "hidden", "important");
+                    timelineContainer.style.setProperty("opacity", "0", "important");
+                    timelineContainer.style.setProperty("flex", "0 0 0px", "important");
+                    timelineContainer.style.setProperty("height", "0px", "important");
+                    if (timelineView) {
+                        timelineView.style.setProperty("display", "none", "important");
+                        timelineView.style.setProperty("visibility", "hidden", "important");
+                        timelineView.style.setProperty("opacity", "0", "important");
+                    }
+                    if (canvasTimelineSplitter) {
+                        canvasTimelineSplitter.style.setProperty("display", "none", "important");
+                        canvasTimelineSplitter.style.setProperty("visibility", "hidden", "important");
+                        canvasTimelineSplitter.style.setProperty("opacity", "0", "important");
+                    }
+                    if (mainSplitter) {
+                        mainSplitter.style.height = "calc(100% - 0px)";
+                        mainSplitter.style.maxHeight = "calc(100% - 0px)";
+                    }
+                    localStorage.setItem("timelineVisible", "false");
+                    resizeCanvas();
+                } else {
+                    timelineContainer.style.display = "flex";
+                    timelineContainer.style.visibility = "visible";
+                    timelineContainer.style.opacity = "1";
+                    timelineContainer.style.removeProperty("flex");
+                    timelineContainer.style.removeProperty("height");
+                    if (timelineView) {
+                        timelineView.style.display = "block";
+                        timelineView.style.visibility = "visible";
+                        timelineView.style.opacity = "1";
+                    }
+                    if (canvasTimelineSplitter) {
+                        canvasTimelineSplitter.style.display = "block";
+                        canvasTimelineSplitter.style.visibility = "visible";
+                        canvasTimelineSplitter.style.opacity = "1";
+                    }
+                    if (mainSplitter) {
+                        mainSplitter.style.height = "calc(100% - 222px)";
+                        mainSplitter.style.maxHeight = "calc(100% - 222px)";
+                    }
+                    localStorage.setItem("timelineVisible", "true");
+                    resizeCanvas();
+                    setTimeout(() => drawTimeline(), 100);
+                }
+            }
         } else if (e.ctrlKey && e.shiftKey && e.key === "R" && currentAnimation && currentAnimation.fullPath) {
             e.preventDefault();
                 const fileInput = document.createElement("input");
@@ -5613,13 +6289,15 @@ window.addEventListener("load", async () => {
             }
         } else if (e.key === "+" || e.key === "=") {
             zoomLevel++;
-            if (zoomLevel > 10) zoomLevel = 10;
+            if (zoomLevel >= zoomFactors.length) zoomLevel = zoomFactors.length - 1;
             localStorage.setItem("mainCanvasZoom", zoomLevel);
+            updateMainCanvasZoomDisplay();
             redraw();
         } else if (e.key === "-" || e.key === "_") {
             zoomLevel--;
             if (zoomLevel < 0) zoomLevel = 0;
             localStorage.setItem("mainCanvasZoom", zoomLevel);
+            updateMainCanvasZoomDisplay();
             redraw();
         } else if (e.key === " ") {
             e.preventDefault();
@@ -5707,23 +6385,76 @@ window.addEventListener("load", async () => {
     document.getElementById("btnCenterView").onclick = () => {
         panX = 0;
         panY = 0;
+        zoomLevel = 6;
+        localStorage.setItem("mainCanvasZoom", zoomLevel);
+        updateMainCanvasZoomDisplay();
         redraw();
     };
-    document.getElementById("singleDir").onchange = (e) => {
-        currentAnimation.singleDir = e.target.checked;
-        if (currentAnimation.singleDir) currentDir = 0;
+    const updateMainCanvasZoomDisplay = () => {
+        const zoomFactor = zoomFactors[zoomLevel] || 1.0;
+        const zoomDisplay = document.getElementById("mainCanvasZoomLevel");
+        if (zoomDisplay) zoomDisplay.textContent = zoomFactor.toFixed(1) + "x";
+    };
+    document.getElementById("btnZoomOut").onclick = () => {
+        zoomLevel--;
+        if (zoomLevel < 0) zoomLevel = 0;
+        localStorage.setItem("mainCanvasZoom", zoomLevel);
+        updateMainCanvasZoomDisplay();
         redraw();
-        updateItemsCombo();
-        saveSession();
     };
-    document.getElementById("looped").onchange = (e) => {
-        currentAnimation.looped = e.target.checked;
-        saveSession();
+    document.getElementById("btnZoomIn").onclick = () => {
+        zoomLevel++;
+        if (zoomLevel >= zoomFactors.length) zoomLevel = zoomFactors.length - 1;
+        localStorage.setItem("mainCanvasZoom", zoomLevel);
+        updateMainCanvasZoomDisplay();
+        redraw();
     };
-    document.getElementById("continous").onchange = (e) => {
-        currentAnimation.continous = e.target.checked;
-        saveSession();
-    };
+    updateMainCanvasZoomDisplay();
+    const singleDirCheckbox = document.getElementById("singleDirCheckbox");
+    if (singleDirCheckbox) {
+        singleDirCheckbox.onclick = () => {
+            currentAnimation.singleDir = !currentAnimation.singleDir;
+            singleDirCheckbox.textContent = currentAnimation.singleDir ? "✓" : " ";
+            if (currentAnimation.singleDir) {
+                currentDir = 0;
+                splitViewEnabled = false;
+                localStorage.setItem("ganiEditorSplitView", "false");
+                const btnSplitView = document.getElementById("btnSplitView");
+                if (btnSplitView) {
+                    btnSplitView.classList.remove("active");
+                    btnSplitView.disabled = true;
+                }
+                const btnMirrored = document.getElementById("btnMirroredActions");
+                if (btnMirrored) {
+                    btnMirrored.style.display = "none";
+                    btnMirrored.classList.remove("active");
+                    mirroredActionsEnabled = false;
+                }
+            } else {
+                const btnSplitView = document.getElementById("btnSplitView");
+                if (btnSplitView) btnSplitView.disabled = false;
+            }
+            redraw();
+            updateItemsCombo();
+            saveSession();
+        };
+    }
+    const loopedCheckbox = document.getElementById("loopedCheckbox");
+    if (loopedCheckbox) {
+        loopedCheckbox.onclick = () => {
+            currentAnimation.looped = !currentAnimation.looped;
+            loopedCheckbox.textContent = currentAnimation.looped ? "✓" : " ";
+            saveSession();
+        };
+    }
+    const continousCheckbox = document.getElementById("continousCheckbox");
+    if (continousCheckbox) {
+        continousCheckbox.onclick = () => {
+            currentAnimation.continous = !currentAnimation.continous;
+            continousCheckbox.textContent = currentAnimation.continous ? "✓" : " ";
+            saveSession();
+        };
+    }
     document.getElementById("nextAni").onchange = (e) => {
         currentAnimation.nextAni = e.target.value;
         saveSession();
@@ -5808,7 +6539,7 @@ window.addEventListener("load", async () => {
                 promises.push(promise);
             }
             await Promise.all(promises);
-            if (DEBUG_MODE) console.log(`Imported ${loadedCount} sound files`);
+            if (DEBUG_MODE) f12Log(`Imported ${loadedCount} sound files`);
         };
         input.click();
     };
@@ -5860,7 +6591,7 @@ window.addEventListener("load", async () => {
             }
         }
         if (loading) loading.close();
-        if (DEBUG_MODE) console.log(`Loaded ${loadedCount} images from workspace`);
+        if (DEBUG_MODE) f12Log(`Loaded ${loadedCount} images from workspace`);
         refreshAllAnimationsSprites();
         drawSpritePreview();
         updateSpritesList();
@@ -6279,8 +7010,8 @@ window.addEventListener("load", async () => {
             #settingsUIScale::-moz-range-thumb { background: ${buttonBg} !important; border-color: ${colors.border} !important; }
             #settingsUIScale::-webkit-slider-runnable-track { background: transparent !important; border-color: ${colors.border} !important; }
             #settingsUIScale::-moz-range-track { background: transparent !important; border-color: ${colors.border} !important; }
-            .toolbar button, .sprite-toolbar button, .playback-controls button, .item-controls button, .settings-group button, .canvas-controls button { background: ${buttonBg} !important; color: ${buttonText} !important; border-color: ${colors.border} !important; }
-            .toolbar button:hover, .sprite-toolbar button:hover, .playback-controls button:hover, .item-controls button:hover, .settings-group button:hover, .canvas-controls button:hover { background: ${buttonHover} !important; }
+            .toolbar button, .sprite-toolbar button, .playback-controls button, .item-controls button, .settings-group button, .canvas-controls button:not(.active) { background: ${buttonBg} !important; color: ${buttonText} !important; border-color: ${colors.border} !important; }
+            .toolbar button:hover, .sprite-toolbar button:hover, .playback-controls button:hover, .item-controls button:hover, .settings-group button:hover, .canvas-controls button:hover:not(.active) { background: ${buttonHover} !important; }
             ${scheme === "fusion-light" || scheme === "light-style" ? `.fas { filter: brightness(0) !important; }` : scheme === "default" ? `.fas { filter: none !important; }` : scheme === "dark-orange" ? `.fas { filter: invert(1) brightness(1.8) sepia(1) saturate(3) hue-rotate(5deg) !important; }` : scheme === "aqua" ? `.fas { filter: invert(1) brightness(1.8) sepia(1) saturate(4) hue-rotate(150deg) !important; }` : `.fas { filter: invert(1) brightness(1.2) !important; }`}
             .tab, .sprite-item, .settings-group, .direction-selector { border-color: ${colors.border} !important; }
             .direction-selector { background: ${colors.panel} !important; }
@@ -6502,7 +7233,8 @@ window.addEventListener("load", async () => {
             else if (selectedValue === "chevyray") buttonFontFamily = '"chevyray", monospace';
             else if (selectedValue === "chevyrayOeuf") buttonFontFamily = '"chevyrayOeuf", monospace';
             else if (selectedValue === "monospace") buttonFontFamily = "monospace";
-            else buttonFontFamily = selectedValue;
+            else if (selectedValue.includes(" ")) buttonFontFamily = `"${selectedValue}", sans-serif`;
+            else buttonFontFamily = `"${selectedValue}", sans-serif`;
         } else if (selectElement.id === "settingsFontStyle") {
             const selectedValue = selectElement.options[selectElement.selectedIndex]?.value || selectElement.options[0]?.value || "";
             if (selectedValue === "italic") buttonFontStyle = "italic";
@@ -6535,14 +7267,20 @@ window.addEventListener("load", async () => {
                 else if (fontValue === "chevyray") fontFamily = '"chevyray", monospace';
                 else if (fontValue === "chevyrayOeuf") fontFamily = '"chevyrayOeuf", monospace';
                 else if (fontValue === "monospace") fontFamily = "monospace";
-                else fontFamily = fontValue;
+                else if (fontValue.includes(" ")) fontFamily = `"${fontValue}", sans-serif`;
+                else fontFamily = `"${fontValue}", sans-serif`;
             } else if (selectElement.id === "settingsFontStyle") {
                 const styleValue = option.value;
                 if (styleValue === "italic") fontStyle = "italic";
                 else if (styleValue === "bold") fontWeight = "bold";
                 else if (styleValue === "bold italic") { fontWeight = "bold"; fontStyle = "italic"; }
             }
-            item.style.cssText = `padding: 8px; cursor: pointer; font-family: ${fontFamily}; font-style: ${fontStyle}; font-weight: ${fontWeight}; font-size: 12px; color: #e0e0e0; border-bottom: 1px solid #0a0a0a;`;
+            item.style.cssText = `padding: 8px; cursor: pointer; font-style: ${fontStyle}; font-weight: ${fontWeight}; font-size: 12px; color: #e0e0e0; border-bottom: 1px solid #0a0a0a;`;
+            if (selectElement.id === "settingsFont") {
+                item.style.setProperty("font-family", fontFamily, "important");
+            } else {
+                item.style.fontFamily = fontFamily;
+            }
             item.textContent = option.text;
             item.dataset.value = option.value;
             if (index === selectElement.selectedIndex) {
@@ -6563,7 +7301,8 @@ window.addEventListener("load", async () => {
                     else if (fontValue === "chevyray") newFontFamily = '"chevyray", monospace';
                     else if (fontValue === "chevyrayOeuf") newFontFamily = '"chevyrayOeuf", monospace';
                     else if (fontValue === "monospace") newFontFamily = "monospace";
-                    else newFontFamily = fontValue;
+                    else if (fontValue.includes(" ")) newFontFamily = `"${fontValue}", sans-serif`;
+                    else newFontFamily = `"${fontValue}", sans-serif`;
                     button.style.fontFamily = newFontFamily;
                 } else if (selectElement.id === "settingsFontStyle") {
                     const styleValue = option.value;
@@ -6605,7 +7344,8 @@ window.addEventListener("load", async () => {
                 else if (selectedValue === "chevyray") newFontFamily = '"chevyray", monospace';
                 else if (selectedValue === "chevyrayOeuf") newFontFamily = '"chevyrayOeuf", monospace';
                 else if (selectedValue === "monospace") newFontFamily = "monospace";
-                else newFontFamily = selectedValue;
+                else if (selectedValue.includes(" ")) newFontFamily = `"${selectedValue}", sans-serif`;
+                else newFontFamily = `"${selectedValue}", sans-serif`;
                 button.style.fontFamily = newFontFamily;
             } else if (selectElement.id === "settingsFontStyle") {
                 const selectedValue = selectElement.options[selectElement.selectedIndex]?.value || "";
@@ -6624,6 +7364,14 @@ window.addEventListener("load", async () => {
     }
     const btnSettings = document.getElementById("btnSettings");
     const settingsDialog = document.getElementById("settingsDialog");
+    const settingsPixelRendering = document.getElementById("settingsPixelRenderingCheckbox");
+    const settingsAutoSave = document.getElementById("settingsAutoSaveCheckbox");
+    const settingsShowGrid = document.getElementById("settingsShowGridCheckbox");
+    const settingsGifAnimations = document.getElementById("settingsGifAnimationsCheckbox");
+        const settingsLightEffects = document.getElementById("settingsLightEffectsCheckbox");
+        const settingsSelectionBorderColor = document.getElementById("settingsSelectionBorderColor");
+        const settingsSelectionBorderThickness = document.getElementById("settingsSelectionBorderThickness");
+        const settingsSelectionBorderThicknessNumber = document.getElementById("settingsSelectionBorderThicknessNumber");
     if (btnSettings && settingsDialog) {
         const settingsFont = document.getElementById("settingsFont");
         const settingsFontSize = document.getElementById("settingsFontSize");
@@ -6631,11 +7379,6 @@ window.addEventListener("load", async () => {
         const settingsUIScale = document.getElementById("settingsUIScale");
         const settingsUIScaleNumber = document.getElementById("settingsUIScaleNumber");
         const settingsUIScaleValue = document.getElementById("settingsUIScaleValue");
-        const settingsPixelRendering = document.getElementById("settingsPixelRendering");
-        const settingsAutoSave = document.getElementById("settingsAutoSave");
-        const settingsShowGrid = document.getElementById("settingsShowGrid");
-        const settingsGifAnimations = document.getElementById("settingsGifAnimations");
-        const settingsLightEffects = document.getElementById("settingsLightEffects");
         const settingsOK = document.getElementById("settingsOK");
         const settingsCancel = document.getElementById("settingsCancel");
         const settingsDefaults = document.getElementById("settingsDefaults");
@@ -6691,6 +7434,8 @@ window.addEventListener("load", async () => {
         const savedShowGrid = localStorage.getItem("editorShowGrid") !== "false";
         const savedGifAnimations = localStorage.getItem("editorGifAnimations") !== "false";
         const savedLightEffects = localStorage.getItem("editorLightEffects") !== "false";
+        const savedSelectionBorderColor = localStorage.getItem("editorSelectionBorderColor") || "#00ff00";
+        const savedSelectionBorderThickness = parseInt(localStorage.getItem("editorSelectionBorderThickness")) || 2;
         function applyFont(font, save = true) {
             const fontFamily = getFontFamily(font);
             document.body.style.fontFamily = fontFamily;
@@ -6814,6 +7559,14 @@ window.addEventListener("load", async () => {
             if (save) localStorage.setItem("editorLightEffects", enabled ? "true" : "false");
             redraw();
         }
+        function applySelectionBorderColor(color, save = true) {
+            if (save) localStorage.setItem("editorSelectionBorderColor", color);
+            redraw();
+        }
+        function applySelectionBorderThickness(thickness, save = true) {
+            if (save) localStorage.setItem("editorSelectionBorderThickness", thickness.toString());
+            redraw();
+        }
         applyFont(savedFont);
         applyFontSize(savedFontSize);
         applyFontStyle(savedFontStyle);
@@ -6822,6 +7575,8 @@ window.addEventListener("load", async () => {
         applyShowGrid(savedShowGrid);
         applyGifAnimations(savedGifAnimations);
         applyLightEffects(savedLightEffects);
+        applySelectionBorderColor(savedSelectionBorderColor, false);
+        applySelectionBorderThickness(savedSelectionBorderThickness, false);
         const updateUIScaleDisplay = (value) => {
             const percent = Math.round(value * 100);
             if (settingsUIScaleValue) settingsUIScaleValue.textContent = percent + "%";
@@ -6839,6 +7594,8 @@ window.addEventListener("load", async () => {
             const currentShowGrid = localStorage.getItem("editorShowGrid") !== "false";
             const currentGifAnimations = localStorage.getItem("editorGifAnimations") !== "false";
             const currentLightEffects = localStorage.getItem("editorLightEffects") !== "false";
+            const currentSelectionBorderColor = localStorage.getItem("editorSelectionBorderColor") || "#00ff00";
+            const currentSelectionBorderThickness = parseInt(localStorage.getItem("editorSelectionBorderThickness")) || 2;
             originalSettings = {
                 font: currentFont,
                 fontSize: currentFontSize,
@@ -6848,7 +7605,9 @@ window.addEventListener("load", async () => {
                 autoSave: currentAutoSave,
                 showGrid: currentShowGrid,
                 gifAnimations: currentGifAnimations,
-                lightEffects: currentLightEffects
+                lightEffects: currentLightEffects,
+                selectionBorderColor: currentSelectionBorderColor,
+                selectionBorderThickness: currentSelectionBorderThickness
             };
             if (settingsFont) settingsFont.value = currentFont;
             if (settingsFontSize) settingsFontSize.value = currentFontSize;
@@ -6857,11 +7616,16 @@ window.addEventListener("load", async () => {
                 settingsUIScale.value = currentUIScale;
                 updateUIScaleDisplay(currentUIScale);
             }
-            if (settingsPixelRendering) settingsPixelRendering.checked = currentPixelRendering;
-            if (settingsAutoSave) settingsAutoSave.checked = currentAutoSave;
-            if (settingsShowGrid) settingsShowGrid.checked = currentShowGrid;
-            if (settingsGifAnimations) settingsGifAnimations.checked = currentGifAnimations;
-            if (settingsLightEffects) settingsLightEffects.checked = currentLightEffects;
+            if (settingsPixelRendering) settingsPixelRendering.textContent = currentPixelRendering ? "✓" : " ";
+            if (settingsAutoSave) settingsAutoSave.textContent = currentAutoSave ? "✓" : " ";
+            if (settingsShowGrid) settingsShowGrid.textContent = currentShowGrid ? "✓" : " ";
+            if (settingsGifAnimations) settingsGifAnimations.textContent = currentGifAnimations ? "✓" : " ";
+            if (settingsLightEffects) settingsLightEffects.textContent = currentLightEffects ? "✓" : " ";
+            if (settingsSelectionBorderColor) settingsSelectionBorderColor.value = currentSelectionBorderColor;
+            if (settingsSelectionBorderThickness) {
+                settingsSelectionBorderThickness.value = currentSelectionBorderThickness;
+                if (settingsSelectionBorderThicknessNumber) settingsSelectionBorderThicknessNumber.value = currentSelectionBorderThickness;
+            }
             settingsDialog.style.display = "flex";
         };
         if (settingsFont) {
@@ -6897,24 +7661,73 @@ window.addEventListener("load", async () => {
             };
         }
         if (settingsPixelRendering) {
-            settingsPixelRendering.onchange = () => {
-                applyPixelRendering(settingsPixelRendering.checked, false);
+            settingsPixelRendering.onclick = () => {
+                const newValue = settingsPixelRendering.textContent.trim() !== "✓";
+                settingsPixelRendering.textContent = newValue ? "✓" : " ";
+                applyPixelRendering(newValue, false);
             };
         }
         if (settingsShowGrid) {
-            settingsShowGrid.onchange = () => {
-                applyShowGrid(settingsShowGrid.checked, false);
+            settingsShowGrid.onclick = () => {
+                const newValue = settingsShowGrid.textContent.trim() !== "✓";
+                settingsShowGrid.textContent = newValue ? "✓" : " ";
+                applyShowGrid(newValue, false);
             };
         }
         if (settingsGifAnimations) {
-            settingsGifAnimations.onchange = () => {
-                applyGifAnimations(settingsGifAnimations.checked, false);
+            settingsGifAnimations.onclick = () => {
+                const newValue = settingsGifAnimations.textContent.trim() !== "✓";
+                settingsGifAnimations.textContent = newValue ? "✓" : " ";
+                applyGifAnimations(newValue, false);
             };
         }
         if (settingsLightEffects) {
-            settingsLightEffects.onchange = () => {
-                applyLightEffects(settingsLightEffects.checked, false);
+            settingsLightEffects.onclick = () => {
+                const newValue = settingsLightEffects.textContent.trim() !== "✓";
+                settingsLightEffects.textContent = newValue ? "✓" : " ";
+                applyLightEffects(newValue, false);
             };
+        }
+        if (settingsAutoSave) {
+            settingsAutoSave.onclick = () => {
+                const newValue = settingsAutoSave.textContent.trim() !== "✓";
+                settingsAutoSave.textContent = newValue ? "✓" : " ";
+            };
+        }
+        if (settingsSelectionBorderColor) {
+            settingsSelectionBorderColor.onchange = () => {
+                applySelectionBorderColor(settingsSelectionBorderColor.value, false);
+            };
+        }
+        if (settingsSelectionBorderThickness && settingsSelectionBorderThicknessNumber) {
+            settingsSelectionBorderThickness.oninput = () => {
+                const thickness = parseInt(settingsSelectionBorderThickness.value) || 2;
+                settingsSelectionBorderThicknessNumber.value = thickness;
+                applySelectionBorderThickness(thickness, false);
+            };
+            settingsSelectionBorderThickness.onchange = () => {
+                const thickness = parseInt(settingsSelectionBorderThickness.value) || 2;
+                settingsSelectionBorderThicknessNumber.value = thickness;
+                applySelectionBorderThickness(thickness, false);
+            };
+            settingsSelectionBorderThicknessNumber.oninput = () => {
+                const thickness = Math.max(1, Math.min(10, parseInt(settingsSelectionBorderThicknessNumber.value) || 2));
+                settingsSelectionBorderThicknessNumber.value = thickness;
+                settingsSelectionBorderThickness.value = thickness;
+                applySelectionBorderThickness(thickness, false);
+            };
+            settingsSelectionBorderThicknessNumber.onchange = () => {
+                const thickness = Math.max(1, Math.min(10, parseInt(settingsSelectionBorderThicknessNumber.value) || 2));
+                settingsSelectionBorderThicknessNumber.value = thickness;
+                settingsSelectionBorderThickness.value = thickness;
+                applySelectionBorderThickness(thickness, false);
+            };
+            addWheelHandler("#settingsSelectionBorderThicknessNumber", (e) => {
+                const thickness = Math.max(1, Math.min(10, parseInt(settingsSelectionBorderThicknessNumber.value) || 2));
+                settingsSelectionBorderThicknessNumber.value = thickness;
+                settingsSelectionBorderThickness.value = thickness;
+                applySelectionBorderThickness(thickness, false);
+            }, 1);
         }
         if (settingsOK) {
             settingsOK.onclick = () => {
@@ -6922,11 +7735,13 @@ window.addEventListener("load", async () => {
                 if (settingsFontSize) applyFontSize(settingsFontSize.value, true);
                 if (settingsFontStyle) applyFontStyle(settingsFontStyle.value, true);
                 if (settingsUIScale) applyUIScale(parseFloat(settingsUIScale.value), true);
-                if (settingsPixelRendering) applyPixelRendering(settingsPixelRendering.checked, true);
-                if (settingsAutoSave) localStorage.setItem("editorAutoSave", settingsAutoSave.checked);
-                if (settingsShowGrid) applyShowGrid(settingsShowGrid.checked, true);
-                if (settingsGifAnimations) applyGifAnimations(settingsGifAnimations.checked, true);
-                if (settingsLightEffects) applyLightEffects(settingsLightEffects.checked, true);
+                if (settingsPixelRendering) applyPixelRendering(settingsPixelRendering.textContent.trim() === "✓", true);
+                if (settingsAutoSave) localStorage.setItem("editorAutoSave", settingsAutoSave.textContent.trim() === "✓");
+                if (settingsShowGrid) applyShowGrid(settingsShowGrid.textContent.trim() === "✓", true);
+                if (settingsGifAnimations) applyGifAnimations(settingsGifAnimations.textContent.trim() === "✓", true);
+                if (settingsLightEffects) applyLightEffects(settingsLightEffects.textContent.trim() === "✓", true);
+                if (settingsSelectionBorderColor) applySelectionBorderColor(settingsSelectionBorderColor.value, true);
+                if (settingsSelectionBorderThickness) applySelectionBorderThickness(parseInt(settingsSelectionBorderThickness.value) || 2, true);
                 settingsDialog.style.display = "none";
             };
         }
@@ -6938,6 +7753,13 @@ window.addEventListener("load", async () => {
             applyShowGrid(originalSettings.showGrid, false);
             applyGifAnimations(originalSettings.gifAnimations, false);
             applyLightEffects(originalSettings.lightEffects, false);
+            applySelectionBorderColor(originalSettings.selectionBorderColor || "#00ff00", false);
+            applySelectionBorderThickness(originalSettings.selectionBorderThickness || 2, false);
+            if (settingsSelectionBorderColor) settingsSelectionBorderColor.value = originalSettings.selectionBorderColor || "#00ff00";
+            if (settingsSelectionBorderThickness) {
+                settingsSelectionBorderThickness.value = (originalSettings.selectionBorderThickness || 2).toString();
+                if (settingsSelectionBorderThicknessNumber) settingsSelectionBorderThicknessNumber.value = (originalSettings.selectionBorderThickness || 2).toString();
+            }
             if (settingsFont) {
                 settingsFont.value = originalSettings.font;
                 settingsFont.dispatchEvent(new Event('change', { bubbles: true }));
@@ -7008,11 +7830,16 @@ window.addEventListener("load", async () => {
                 updateUIScaleDisplay(originalSettings.uiScale);
             }
             if (settingsUIScaleNumber) settingsUIScaleNumber.value = originalSettings.uiScale;
-            if (settingsPixelRendering) settingsPixelRendering.checked = originalSettings.pixelRendering;
-            if (settingsAutoSave) settingsAutoSave.checked = originalSettings.autoSave;
-            if (settingsShowGrid) settingsShowGrid.checked = originalSettings.showGrid;
-            if (settingsGifAnimations) settingsGifAnimations.checked = originalSettings.gifAnimations;
-            if (settingsLightEffects) settingsLightEffects.checked = originalSettings.lightEffects;
+            if (settingsPixelRendering) settingsPixelRendering.textContent = originalSettings.pixelRendering ? "✓" : " ";
+            if (settingsAutoSave) settingsAutoSave.textContent = originalSettings.autoSave ? "✓" : " ";
+            if (settingsShowGrid) settingsShowGrid.textContent = originalSettings.showGrid ? "✓" : " ";
+            if (settingsGifAnimations) settingsGifAnimations.textContent = originalSettings.gifAnimations ? "✓" : " ";
+            if (settingsLightEffects) settingsLightEffects.textContent = originalSettings.lightEffects ? "✓" : " ";
+            if (settingsSelectionBorderColor) settingsSelectionBorderColor.value = originalSettings.selectionBorderColor || "#00ff00";
+            if (settingsSelectionBorderThickness) {
+                settingsSelectionBorderThickness.value = (originalSettings.selectionBorderThickness || 2).toString();
+                if (settingsSelectionBorderThicknessNumber) settingsSelectionBorderThicknessNumber.value = (originalSettings.selectionBorderThickness || 2).toString();
+            }
             settingsDialog.style.display = "none";
         };
         if (settingsCancel) {
@@ -7043,28 +7870,37 @@ window.addEventListener("load", async () => {
                     settingsUIScaleNumber.value = "1";
                 }
                 if (settingsPixelRendering) {
-                    settingsPixelRendering.checked = true;
+                    settingsPixelRendering.textContent = "✓";
                     applyPixelRendering(true, false);
                 }
                 if (settingsAutoSave) {
-                    settingsAutoSave.checked = true;
+                    settingsAutoSave.textContent = "✓";
                 }
                 if (settingsShowGrid) {
-                    settingsShowGrid.checked = true;
+                    settingsShowGrid.textContent = "✓";
                     applyShowGrid(true, false);
                 }
                 if (settingsGifAnimations) {
-                    settingsGifAnimations.checked = true;
+                    settingsGifAnimations.textContent = "✓";
                     applyGifAnimations(true, false);
                 }
                 if (settingsLightEffects) {
-                    settingsLightEffects.checked = true;
+                    settingsLightEffects.textContent = "✓";
                     applyLightEffects(true, false);
+                }
+                if (settingsSelectionBorderColor) {
+                    settingsSelectionBorderColor.value = "#00ff00";
+                    applySelectionBorderColor("#00ff00", false);
+                }
+                if (settingsSelectionBorderThickness) {
+                    settingsSelectionBorderThickness.value = "2";
+                    if (settingsSelectionBorderThicknessNumber) settingsSelectionBorderThicknessNumber.value = "2";
+                    applySelectionBorderThickness(2, false);
                 }
             };
         }
         const resetEditorToDefaults = () => {
-            zoomLevel = 3;
+            zoomLevel = 6;
             panX = 0;
             panY = 0;
             backgroundColor = "#006400";
@@ -7138,6 +7974,8 @@ window.addEventListener("load", async () => {
             applyGifAnimations(true, true);
             applyLightEffects(true, true);
             applyColorScheme("default");
+            applySelectionBorderColor("#00ff00", true);
+            applySelectionBorderThickness(2, true);
             if (settingsFont) {
                 settingsFont.value = "chevyray";
                 settingsFont.dispatchEvent(new Event('change', { bubbles: true }));
@@ -7190,9 +8028,9 @@ window.addEventListener("load", async () => {
                 updateUIScaleDisplay(1);
             }
             if (settingsUIScaleNumber) settingsUIScaleNumber.value = "1";
-            if (settingsPixelRendering) settingsPixelRendering.checked = true;
-            if (settingsAutoSave) settingsAutoSave.checked = true;
-            if (settingsShowGrid) settingsShowGrid.checked = true;
+            if (settingsPixelRendering) settingsPixelRendering.textContent = "✓";
+            if (settingsAutoSave) settingsAutoSave.textContent = "✓";
+            if (settingsShowGrid) settingsShowGrid.textContent = "✓";
             updateTabs();
             updateItemsCombo();
             updateItemSettings();
@@ -7239,16 +8077,22 @@ window.addEventListener("load", async () => {
         if (settingsReset) {
             settingsReset.onclick = (e) => {
                 e.stopPropagation();
-                showConfirmDialog("Reset the editor to default state? This will reset zoom, pan, selections, UI layout, and all settings.", (confirmed) => {
+                showConfirmDialog("Reset the editor to default state? This will reset zoom, pan, selections, UI layout, and all settings.", (confirmed, clearStorage) => {
                     if (confirmed) {
+                        if (clearStorage) {
+                            localStorage.clear();
+                        }
                         resetEditorToDefaults();
                         updateFrameInfo();
                         updateSpritesList();
                         updateDefaultsTable();
-                        saveSession();
+                        if (!clearStorage) {
+                            saveSession();
+                        }
                         settingsDialog.style.display = "none";
+                        location.reload();
                     }
-                });
+                }, true);
             };
         }
         settingsDialog.onclick = (e) => {
@@ -7459,6 +8303,7 @@ window.addEventListener("load", async () => {
                 <div style="margin-left: 16px; margin-bottom: 8px;">Ctrl+R - Reset Editor</div>
                 <div style="margin-left: 16px; margin-bottom: 8px;">Ctrl+Z - Undo</div>
                 <div style="margin-left: 16px; margin-bottom: 8px;">Ctrl+Y - Redo</div>
+                <div style="margin-left: 16px; margin-bottom: 8px;">Alt+Z - Toggle All Panels</div>
                 <div style="margin-left: 16px; margin-bottom: 8px;">ESC - Deselect / Close Dialogs</div>
             `;
         }
@@ -7533,20 +8378,230 @@ window.addEventListener("load", async () => {
     };
     document.getElementById("btnAttachmentBack").onclick = () => {
         if (!editingSprite) return;
-        if (editingSprite.m_drawIndex > 0) {
-            editingSprite.m_drawIndex--;
+        if (selectedAttachedSprite >= 0 && selectedAttachedSprite < editingSprite.attachedSprites.length) {
+            const oldState = serializeAnimationState();
+            if (selectedAttachedSprite === editingSprite.m_drawIndex) {
+                editingSprite.m_drawIndex++;
+            } else {
+                if (selectedAttachedSprite > 0) {
+                    const temp = editingSprite.attachedSprites[selectedAttachedSprite];
+                    editingSprite.attachedSprites[selectedAttachedSprite] = editingSprite.attachedSprites[selectedAttachedSprite - 1];
+                    editingSprite.attachedSprites[selectedAttachedSprite - 1] = temp;
+                    selectedAttachedSprite--;
+                }
+            }
+            const newState = serializeAnimationState();
+            addUndoCommand({
+                oldState,
+                newState,
+                description: `Move attachment backward`
+            });
             redraw();
             drawSpritePreview();
         }
     };
     document.getElementById("btnAttachmentForward").onclick = () => {
         if (!editingSprite) return;
-        if (editingSprite.m_drawIndex < editingSprite.attachedSprites.length) {
-            editingSprite.m_drawIndex++;
+        if (selectedAttachedSprite >= 0 && selectedAttachedSprite < editingSprite.attachedSprites.length) {
+            const oldState = serializeAnimationState();
+            if (selectedAttachedSprite + 1 === editingSprite.m_drawIndex) {
+                editingSprite.m_drawIndex--;
+            } else {
+                if (selectedAttachedSprite < editingSprite.attachedSprites.length - 1) {
+                    const temp = editingSprite.attachedSprites[selectedAttachedSprite];
+                    editingSprite.attachedSprites[selectedAttachedSprite] = editingSprite.attachedSprites[selectedAttachedSprite + 1];
+                    editingSprite.attachedSprites[selectedAttachedSprite + 1] = temp;
+                    selectedAttachedSprite++;
+                }
+            }
+            const newState = serializeAnimationState();
+            addUndoCommand({
+                oldState,
+                newState,
+                description: `Move attachment forward`
+            });
             redraw();
             drawSpritePreview();
         }
     };
+    function getPreviewCanvasPos(e) {
+        const rect = spritePreviewCanvas.getBoundingClientRect();
+        const scale = Math.pow(1.2, spritePreviewZoom - 3);
+        const canvasX = (e.clientX - rect.left) * (spritePreviewCanvas.width / rect.width);
+        const canvasY = (e.clientY - rect.top) * (spritePreviewCanvas.height / rect.height);
+        const centerX = spritePreviewCanvas.width / 2;
+        const centerY = spritePreviewCanvas.height / 2;
+        const previewX = (canvasX - centerX - spritePreviewPanX) / scale;
+        const previewY = (canvasY - centerY - spritePreviewPanY) / scale;
+        const spriteTopLeftX = -editingSprite.width / 2;
+        const spriteTopLeftY = -editingSprite.height / 2;
+        return {x: previewX - spriteTopLeftX, y: previewY - spriteTopLeftY};
+    }
+    function pointInBoundingBox(point, bbox, offset) {
+        const x = point.x - offset.x;
+        const y = point.y - offset.y;
+        return x >= bbox.x && x <= bbox.x + bbox.width && y >= bbox.y && y <= bbox.y + bbox.height;
+    }
+    spritePreviewCanvas.onmousedown = (e) => {
+        if (!editingSprite) return;
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        const pos = getPreviewCanvasPos(e);
+        if (e.button === 2) {
+            if (insertPiece) {
+                insertPiece = null;
+                drawSpritePreview();
+                return;
+            }
+            spritePreviewPanning = true;
+            spritePreviewPanStartX = e.clientX;
+            spritePreviewPanStartY = e.clientY;
+            spritePreviewPanStartPanX = spritePreviewPanX;
+            spritePreviewPanStartPanY = spritePreviewPanY;
+            spritePreviewCanvas.style.cursor = "grabbing";
+            return;
+        }
+        if (e.button === 0) {
+            if (insertPiece && insertPiece.spriteIndex !== undefined && !isPlacingAttachment) {
+                isPlacingAttachment = true;
+                const spriteIndex = insertPiece.spriteIndex;
+                const insertOffset = {x: Math.floor(0.5 + insertPiece.xoffset), y: Math.floor(0.5 + insertPiece.yoffset)};
+                insertPiece = null;
+                selectedAttachedSprite = -1;
+                const oldState = serializeAnimationState();
+                editingSprite.attachedSprites.push({
+                    index: spriteIndex,
+                    offset: insertOffset
+                });
+                const newState = serializeAnimationState();
+                addUndoCommand({oldState, newState, description: `Add sprite attachment ${spriteIndex}`});
+                redraw();
+                setTimeout(() => { isPlacingAttachment = false; }, 100);
+                return;
+            }
+            if (editingSprite.attachedSprites.length > 0) {
+                for (let i = editingSprite.attachedSprites.length - 1; i >= 0; i--) {
+                    const attached = editingSprite.attachedSprites[i];
+                    const attachedSprite = currentAnimation.getAniSprite(attached.index, "");
+                    if (attachedSprite) {
+                        const attachedDrawX = attached.offset.x;
+                        const attachedDrawY = attached.offset.y;
+                        const bbox = attachedSprite.boundingBox;
+                        const x = pos.x - (attachedDrawX + bbox.x);
+                        const y = pos.y - (attachedDrawY + bbox.y);
+                        if (x >= 0 && x <= bbox.width && y >= 0 && y <= bbox.height) {
+                            selectedAttachedSprite = i;
+                            attachedSpriteStartMove = {...attached.offset};
+                            attachedSprite.dragOffset = {x: pos.x - attached.offset.x, y: pos.y - attached.offset.y};
+                            drawSpritePreview();
+                            return;
+                        }
+                    }
+                }
+            }
+            selectedAttachedSprite = -1;
+            drawSpritePreview();
+        }
+    };
+    spritePreviewCanvas.onmousemove = (e) => {
+        if (!editingSprite) return;
+        if (spritePreviewPanning) {
+            spritePreviewPanX = spritePreviewPanStartPanX + (e.clientX - spritePreviewPanStartX);
+            spritePreviewPanY = spritePreviewPanStartPanY + (e.clientY - spritePreviewPanStartY);
+            drawSpritePreview();
+            return;
+        }
+        if (isPlacingAttachment) return;
+        const pos = getPreviewCanvasPos(e);
+        if (insertPiece && insertPiece.dragOffset) {
+            insertPiece.xoffset = pos.x - insertPiece.dragOffset.x;
+            insertPiece.yoffset = pos.y - insertPiece.dragOffset.y;
+            drawSpritePreview();
+            return;
+        }
+        if (e.buttons === 1 && selectedAttachedSprite >= 0 && selectedAttachedSprite < editingSprite.attachedSprites.length) {
+            const attached = editingSprite.attachedSprites[selectedAttachedSprite];
+            const attachedSprite = currentAnimation.getAniSprite(attached.index, "");
+            if (attachedSprite && attachedSprite.dragOffset) {
+                attached.offset = {
+                    x: Math.floor(0.5 + pos.x - attachedSprite.dragOffset.x),
+                    y: Math.floor(0.5 + pos.y - attachedSprite.dragOffset.y)
+                };
+                drawSpritePreview();
+            }
+        }
+    };
+    spritePreviewCanvas.onmouseup = (e) => {
+        if (!editingSprite) return;
+        if (e.button === 2 && spritePreviewPanning) {
+            spritePreviewPanning = false;
+            spritePreviewCanvas.style.cursor = "default";
+            return;
+        }
+        if (e.button === 0 && selectedAttachedSprite >= 0 && selectedAttachedSprite < editingSprite.attachedSprites.length && attachedSpriteStartMove) {
+            const attached = editingSprite.attachedSprites[selectedAttachedSprite];
+            if (attached.offset.x !== attachedSpriteStartMove.x || attached.offset.y !== attachedSpriteStartMove.y) {
+                const oldState = serializeAnimationState();
+                attached.offset = {...attached.offset};
+                const newState = serializeAnimationState();
+                addUndoCommand({
+                    oldState,
+                    newState,
+                    description: `Move sprite attachment ${attached.index}`
+                });
+                attachedSpriteStartMove = null;
+                redraw();
+            }
+        }
+    };
+    spritePreviewCanvas.oncontextmenu = (e) => {
+        e.preventDefault();
+    };
+    spritePreviewCanvas.addEventListener("wheel", (e) => {
+        if (!editingSprite) return;
+        if (spritePreviewPanning) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const width = spritePreviewCanvas.width;
+        const height = spritePreviewCanvas.height;
+        const rect = spritePreviewCanvas.getBoundingClientRect();
+        const canvasX = (e.clientX - rect.left) * (spritePreviewCanvas.width / rect.width);
+        const canvasY = (e.clientY - rect.top) * (spritePreviewCanvas.height / rect.height);
+        const centerX = width / 2;
+        const centerY = height / 2;
+        const oldScale = Math.pow(1.2, spritePreviewZoom - 3);
+        const oldWorldX = (canvasX - centerX - spritePreviewPanX) / oldScale;
+        const oldWorldY = (canvasY - centerY - spritePreviewPanY) / oldScale;
+        const delta = e.deltaY > 0 ? -1 : 1;
+        spritePreviewZoom = Math.max(0, Math.min(10, spritePreviewZoom + delta));
+        const newScale = Math.pow(1.2, spritePreviewZoom - 3);
+        const newWorldX = (canvasX - centerX - spritePreviewPanX) / newScale;
+        const newWorldY = (canvasY - centerY - spritePreviewPanY) / newScale;
+        spritePreviewPanX += (newWorldX - oldWorldX) * newScale;
+        spritePreviewPanY += (newWorldY - oldWorldY) * newScale;
+        drawSpritePreview();
+    });
+    spritePreviewCanvas.addEventListener("keydown", (e) => {
+        if (!editingSprite) return;
+        if (e.key === "Delete" && selectedAttachedSprite >= 0 && selectedAttachedSprite < editingSprite.attachedSprites.length) {
+            const oldState = serializeAnimationState();
+            const deleted = editingSprite.attachedSprites.splice(selectedAttachedSprite, 1)[0];
+            if (selectedAttachedSprite < editingSprite.m_drawIndex) {
+                editingSprite.m_drawIndex--;
+            }
+            selectedAttachedSprite = -1;
+            const newState = serializeAnimationState();
+            addUndoCommand({
+                oldState,
+                newState,
+                description: `Delete sprite attachment ${deleted.index}`
+            });
+            redraw();
+            drawSpritePreview();
+        }
+    });
+    spritePreviewCanvas.tabIndex = 0;
     document.getElementById("btnItemUp").onclick = () => {
         const frame = currentAnimation.getFrame(currentFrame);
         if (!frame) return;
@@ -7668,14 +8723,37 @@ window.addEventListener("load", async () => {
         const rect = mainCanvas.getBoundingClientRect();
         const adjustedMouseX = adjustCoordinateForUIScale(e.clientX, rect.left, rect, false);
         const adjustedMouseY = adjustCoordinateForUIScale(e.clientY, rect.top, rect, true);
-        const oldWorldX = (adjustedMouseX - width / 2 - panX) / oldZoom;
-        const oldWorldY = (adjustedMouseY - height / 2 - panY) / oldZoom;
+        let oldWorldX, oldWorldY;
+        if (splitViewEnabled && !currentAnimation.singleDir) {
+            const quadWidth = width / 2;
+            const quadHeight = height / 2;
+            const quadIndex = Math.floor(adjustedMouseY / quadHeight) * 2 + Math.floor(adjustedMouseX / quadWidth);
+            const quadX = (quadIndex % 2) * quadWidth;
+            const quadY = Math.floor(quadIndex / 2) * quadHeight;
+            oldWorldX = (adjustedMouseX - quadX - quadWidth / 2 - panX) / oldZoom;
+            oldWorldY = (adjustedMouseY - quadY - quadHeight / 2 - panY) / oldZoom;
+        } else {
+            oldWorldX = (adjustedMouseX - width / 2 - panX) / oldZoom;
+            oldWorldY = (adjustedMouseY - height / 2 - panY) / oldZoom;
+        }
         const delta = e.deltaY > 0 ? -1 : 1;
-        zoomLevel = Math.max(0, Math.min(7, zoomLevel + delta));
+        zoomLevel = Math.max(0, Math.min(zoomFactors.length - 1, zoomLevel + delta));
         localStorage.setItem("mainCanvasZoom", zoomLevel);
+        updateMainCanvasZoomDisplay();
         const newZoom = zoomFactors[zoomLevel] || 1.0;
-        const newWorldX = (adjustedMouseX - width / 2 - panX) / newZoom;
-        const newWorldY = (adjustedMouseY - height / 2 - panY) / newZoom;
+        let newWorldX, newWorldY;
+        if (splitViewEnabled && !currentAnimation.singleDir) {
+            const quadWidth = width / 2;
+            const quadHeight = height / 2;
+            const quadIndex = Math.floor(adjustedMouseY / quadHeight) * 2 + Math.floor(adjustedMouseX / quadWidth);
+            const quadX = (quadIndex % 2) * quadWidth;
+            const quadY = Math.floor(quadIndex / 2) * quadHeight;
+            newWorldX = (adjustedMouseX - quadX - quadWidth / 2 - panX) / newZoom;
+            newWorldY = (adjustedMouseY - quadY - quadHeight / 2 - panY) / newZoom;
+        } else {
+            newWorldX = (adjustedMouseX - width / 2 - panX) / newZoom;
+            newWorldY = (adjustedMouseY - height / 2 - panY) / newZoom;
+        }
         const deltaX = newWorldX - oldWorldX;
         const deltaY = newWorldY - oldWorldY;
         panX -= deltaX * newZoom;
@@ -7728,7 +8806,7 @@ window.addEventListener("load", async () => {
             if (initialPinchDistance !== null && twoFingerPanStart) {
                 const oldZoom = zoomFactors[zoomLevel] || 1.0;
                 const zoomRatio = currentDistance / initialPinchDistance;
-                const newZoomLevel = Math.max(0, Math.min(7, initialZoomLevel + Math.log2(zoomRatio)));
+                const newZoomLevel = Math.max(0, Math.min(zoomFactors.length - 1, initialZoomLevel + Math.log2(zoomRatio)));
                 zoomLevel = Math.round(newZoomLevel);
                 localStorage.setItem("mainCanvasZoom", zoomLevel);
                 const newZoom = zoomFactors[zoomLevel] || 1.0;
@@ -7775,8 +8853,23 @@ window.addEventListener("load", async () => {
     function addWheelHandler(selector, onChange, step = 1) {
         const el = document.querySelector(selector);
         if (!el) return;
+        let hoverTimer = null;
+        let isHoverActive = false;
+        el.addEventListener("mouseenter", () => {
+            hoverTimer = setTimeout(() => {
+                isHoverActive = true;
+                hoverTimer = null;
+            }, 350);
+        });
+        el.addEventListener("mouseleave", () => {
+            if (hoverTimer) {
+                clearTimeout(hoverTimer);
+                hoverTimer = null;
+            }
+            isHoverActive = false;
+        });
         el.addEventListener("wheel", (e) => {
-            if (e.target.closest("#mainCanvas") || el.disabled) return;
+            if (e.target.closest("#mainCanvas") || el.disabled || !isHoverActive) return;
             e.preventDefault();
             e.stopPropagation();
             const delta = e.deltaY < 0 ? step : -step;
@@ -7826,12 +8919,22 @@ window.addEventListener("load", async () => {
         const logicalHeight = mainCanvas.height / (window.devicePixelRatio || 1);
         const visualWidth = rect.width;
         const visualHeight = rect.height;
-        const zoomFactors = [0.25, 0.5, 0.75, 1.0, 2, 3, 4, 8];
         const zoom = zoomFactors[zoomLevel] || 1.0;
         const adjustedX = adjustCoordinateForUIScale(e.clientX, rect.left, rect, false);
         const adjustedY = adjustCoordinateForUIScale(e.clientY, rect.top, rect, true);
-        const x = (adjustedX - logicalWidth / 2 - panX) / zoom;
-        const y = (adjustedY - logicalHeight / 2 - panY) / zoom;
+        let x, y;
+        if (splitViewEnabled && !currentAnimation.singleDir) {
+            const quadWidth = logicalWidth / 2;
+            const quadHeight = logicalHeight / 2;
+            const quadIndex = Math.floor(adjustedY / quadHeight) * 2 + Math.floor(adjustedX / quadWidth);
+            const quadX = (quadIndex % 2) * quadWidth;
+            const quadY = Math.floor(quadIndex / 2) * quadHeight;
+            x = (adjustedX - quadX - quadWidth / 2 - panX) / zoom;
+            y = (adjustedY - quadY - quadHeight / 2 - panY) / zoom;
+        } else {
+            x = (adjustedX - logicalWidth / 2 - panX) / zoom;
+            y = (adjustedY - logicalHeight / 2 - panY) / zoom;
+        }
         if (e.button === 2) {
             isRightClickPanning = true;
             rightClickPanStartX = e.clientX;
@@ -7849,7 +8952,14 @@ window.addEventListener("load", async () => {
             if (insertPiece) {
                 const frame = currentAnimation.getFrame(currentFrame);
                 if (frame) {
-                    const actualDir = getDirIndex(currentDir);
+                    let dirToUse = currentDir;
+                    if (splitViewEnabled && !currentAnimation.singleDir) {
+                        const quadWidth = logicalWidth / 2;
+                        const quadHeight = logicalHeight / 2;
+                        const quadIndex = Math.floor(adjustedY / quadHeight) * 2 + Math.floor(adjustedX / quadWidth);
+                        dirToUse = Math.min(3, Math.max(0, quadIndex));
+                    }
+                    const actualDir = getDirIndex(dirToUse);
                     const sprite = currentAnimation.getAniSprite(insertPiece.spriteIndex, insertPiece.spriteName);
                     const expectedImage = sprite ? (sprite.type === "CUSTOM" ? sprite.customImageName : currentAnimation.getDefaultImageName(sprite.type)) : "unknown";
                     const actualImage = sprite ? getSpriteImage(sprite) : null;
@@ -7883,7 +8993,15 @@ window.addEventListener("load", async () => {
             }
             const frame = currentAnimation.getFrame(currentFrame);
             if (frame) {
-                const actualDir = getDirIndex(currentDir);
+                let dirToUse = currentDir;
+                if (splitViewEnabled && !currentAnimation.singleDir) {
+                    const quadWidth = logicalWidth / 2;
+                    const quadHeight = logicalHeight / 2;
+                    const quadIndex = Math.floor(adjustedY / quadHeight) * 2 + Math.floor(adjustedX / quadWidth);
+                    const directions = [0, 1, 2, 3];
+                    dirToUse = directions[Math.min(3, Math.max(0, quadIndex))];
+                }
+                const actualDir = getDirIndex(dirToUse);
                 const pieces = frame.pieces[actualDir] || [];
                 let found = false;
                 for (let i = pieces.length - 1; i >= 0; i--) {
@@ -7897,9 +9015,15 @@ window.addEventListener("load", async () => {
                                 selectedPieces.add(piece);
                             }
                         } else {
+                            if (mirroredActionsEnabled && splitViewEnabled && !currentAnimation.singleDir) {
+                                if (!selectedPieces.has(piece)) {
+                                selectedPieces.add(piece);
+                            }
+                        } else {
                             if (!selectedPieces.has(piece)) {
                                 selectedPieces.clear();
                                 selectedPieces.add(piece);
+                                }
                             }
                         }
                         dragOffset = {x: x - piece.xoffset, y: y - piece.yoffset};
@@ -7965,6 +9089,13 @@ window.addEventListener("load", async () => {
                     boxSelectStart = {x, y};
                     boxSelectEnd = {x, y};
                     isBoxSelecting = true;
+                    if (splitViewEnabled && !currentAnimation.singleDir) {
+                        const quadWidth = logicalWidth / 2;
+                        const quadHeight = logicalHeight / 2;
+                        boxSelectQuadrant = Math.floor(adjustedY / quadHeight) * 2 + Math.floor(adjustedX / quadWidth);
+                    } else {
+                        boxSelectQuadrant = -1;
+                    }
                 }
             }
         } else if (e.button === 2) {
@@ -7990,12 +9121,29 @@ window.addEventListener("load", async () => {
             const uiScale = getUIScale();
             const logicalWidth = mainCanvas.width / (window.devicePixelRatio || 1);
             const logicalHeight = mainCanvas.height / (window.devicePixelRatio || 1);
-        const zoomFactors = [0.25, 0.5, 0.75, 1.0, 2, 3, 4, 8];
         const zoom = zoomFactors[zoomLevel] || 1.0;
             const adjustedX = adjustCoordinateForUIScale(e.clientX, rect.left, rect, false);
             const adjustedY = adjustCoordinateForUIScale(e.clientY, rect.top, rect, true);
-            const x = (adjustedX - logicalWidth / 2 - panX) / zoom;
-            const y = (adjustedY - logicalHeight / 2 - panY) / zoom;
+            let x, y;
+            if (splitViewEnabled && !currentAnimation.singleDir && isBoxSelecting && boxSelectQuadrant >= 0) {
+                const quadWidth = logicalWidth / 2;
+                const quadHeight = logicalHeight / 2;
+                const quadX = (boxSelectQuadrant % 2) * quadWidth;
+                const quadY = Math.floor(boxSelectQuadrant / 2) * quadHeight;
+                x = (adjustedX - quadX - quadWidth / 2 - panX) / zoom;
+                y = (adjustedY - quadY - quadHeight / 2 - panY) / zoom;
+            } else if (splitViewEnabled && !currentAnimation.singleDir && isDragging) {
+                const quadWidth = logicalWidth / 2;
+                const quadHeight = logicalHeight / 2;
+                const quadIndex = Math.floor(adjustedY / quadHeight) * 2 + Math.floor(adjustedX / quadWidth);
+                const quadX = (quadIndex % 2) * quadWidth;
+                const quadY = Math.floor(quadIndex / 2) * quadHeight;
+                x = (adjustedX - quadX - quadWidth / 2 - panX) / zoom;
+                y = (adjustedY - quadY - quadHeight / 2 - panY) / zoom;
+            } else {
+                x = (adjustedX - logicalWidth / 2 - panX) / zoom;
+                y = (adjustedY - logicalHeight / 2 - panY) / zoom;
+            }
         if (isRightClickPanning) {
             const deltaX = Math.abs(e.clientX - rightClickPanStartX);
             const deltaY = Math.abs(e.clientY - rightClickPanStartY);
@@ -8098,11 +9246,27 @@ window.addEventListener("load", async () => {
             const zoom = zoomFactors[zoomLevel] || 1.0;
             const adjustedX = adjustCoordinateForUIScale(e.clientX, rect.left, rect);
             const adjustedY = adjustCoordinateForUIScale(e.clientY, rect.top, rect);
-            const x = (adjustedX - logicalWidth / 2 - panX) / zoom;
-            const y = (adjustedY - logicalHeight / 2 - panY) / zoom;
+            let x, y;
+            if (splitViewEnabled && !currentAnimation.singleDir) {
+                const quadWidth = logicalWidth / 2;
+                const quadHeight = logicalHeight / 2;
+                const quadIndex = boxSelectQuadrant >= 0 ? boxSelectQuadrant : (Math.floor(adjustedY / quadHeight) * 2 + Math.floor(adjustedX / quadWidth));
+                const quadX = (quadIndex % 2) * quadWidth;
+                const quadY = Math.floor(quadIndex / 2) * quadHeight;
+                x = (adjustedX - quadX - quadWidth / 2 - panX) / zoom;
+                y = (adjustedY - quadY - quadHeight / 2 - panY) / zoom;
+            } else {
+                x = (adjustedX - logicalWidth / 2 - panX) / zoom;
+                y = (adjustedY - logicalHeight / 2 - panY) / zoom;
+            }
             const frame = currentAnimation.getFrame(currentFrame);
             if (frame) {
-                const actualDir = getDirIndex(currentDir);
+                let dirToUse = currentDir;
+                if (splitViewEnabled && !currentAnimation.singleDir && boxSelectQuadrant >= 0) {
+                    const directions = [0, 1, 2, 3];
+                    dirToUse = directions[Math.min(3, Math.max(0, boxSelectQuadrant))];
+                }
+                const actualDir = getDirIndex(dirToUse);
                 const pieces = frame.pieces[actualDir] || [];
                 const minX = Math.min(boxSelectStart.x, x);
                 const maxX = Math.max(boxSelectStart.x, x);
@@ -8182,7 +9346,6 @@ window.addEventListener("load", async () => {
         const logicalHeight = mainCanvas.height / (window.devicePixelRatio || 1);
         const visualWidth = rect.width;
         const visualHeight = rect.height;
-        const zoomFactors = [0.25, 0.5, 0.75, 1.0, 2, 3, 4, 8];
         const zoom = zoomFactors[zoomLevel] || 1.0;
         const touch = e.touches[0] || e.changedTouches[0];
         const adjustedX = adjustCoordinateForUIScale(touch.clientX, rect.left, rect, false);
@@ -8204,7 +9367,6 @@ window.addEventListener("load", async () => {
         const rect = mainCanvas.getBoundingClientRect();
         const width = mainCanvas.width / (window.devicePixelRatio || 1);
         const height = mainCanvas.height / (window.devicePixelRatio || 1);
-        const zoomFactors = [0.25, 0.5, 0.75, 1.0, 2, 3, 4, 8];
         const zoom = zoomFactors[zoomLevel] || 1.0;
         const x = coords.x;
         const y = coords.y;
@@ -8347,7 +9509,6 @@ window.addEventListener("load", async () => {
         const rect = mainCanvas.getBoundingClientRect();
         const width = mainCanvas.width / (window.devicePixelRatio || 1);
         const height = mainCanvas.height / (window.devicePixelRatio || 1);
-        const zoomFactors = [0.25, 0.5, 0.75, 1.0, 2, 3, 4, 8];
         const zoom = zoomFactors[zoomLevel] || 1.0;
         const x = coords.x;
         const y = coords.y;
@@ -8589,7 +9750,9 @@ function playAnimation() {
         updateFrameInfo();
     }
     drawTimeline();
-    requestAnimationFrame(playAnimation);
+    if (isPlaying) {
+        requestAnimationFrame(playAnimation);
+    }
 }
 
 function showSpriteContextMenu(e, sprite) {
@@ -8888,17 +10051,10 @@ function getColorSchemeColors() {
     };
     return schemes[scheme] || schemes["default"];
 }
-function showConfirmDialog(message, callback) {
+function showConfirmDialog(message, callback, showClearStorage = false) {
     const colors = getColorSchemeColors();
     const currentFont = localStorage.getItem("editorFont") || "chevyray";
-    let fontFamily = currentFont;
-    if (currentFont === "PressStart2P") fontFamily = '"PressStart2P", monospace';
-    else if (currentFont === "Silkscreen") fontFamily = '"Silkscreen", monospace';
-    else if (currentFont === "Tempus Sans ITC") fontFamily = '"Tempus Sans ITC", monospace';
-    else if (currentFont === "MesloLGS NF") fontFamily = '"MesloLGS NF", monospace';
-    else if (currentFont === "chevyray") fontFamily = '"chevyray", monospace';
-    else if (currentFont === "chevyrayOeuf") fontFamily = '"chevyrayOeuf", monospace';
-    else if (currentFont === "monospace") fontFamily = "monospace";
+    const fontFamily = getFontFamily(currentFont);
     const dialog = document.createElement("div");
     dialog.className = "dialog-overlay";
     dialog.style.display = "flex";
@@ -8931,6 +10087,53 @@ function showConfirmDialog(message, callback) {
     messageEl.style.mozUserSelect = "none";
     messageEl.style.msUserSelect = "none";
     messageEl.textContent = message;
+    let clearStorageCheckbox = null;
+    let checkboxContainer = null;
+    if (showClearStorage) {
+        checkboxContainer = document.createElement("div");
+        checkboxContainer.style.display = "flex";
+        checkboxContainer.style.alignItems = "center";
+        checkboxContainer.style.justifyContent = "center";
+        checkboxContainer.style.marginTop = "15px";
+        checkboxContainer.style.marginBottom = "10px";
+        checkboxContainer.style.gap = "8px";
+        clearStorageCheckbox = document.createElement("span");
+        clearStorageCheckbox.id = "clearStorageCheckbox";
+        clearStorageCheckbox.textContent = " ";
+        clearStorageCheckbox.style.display = "inline-block";
+        clearStorageCheckbox.style.width = "16px";
+        clearStorageCheckbox.style.height = "16px";
+        clearStorageCheckbox.style.textAlign = "center";
+        clearStorageCheckbox.style.border = `1px solid ${colors.border === "#0a0a0a" ? "#555" : colors.border}`;
+        clearStorageCheckbox.style.background = colors.inputBg || colors.panel;
+        clearStorageCheckbox.style.verticalAlign = "middle";
+        clearStorageCheckbox.style.lineHeight = "14px";
+        clearStorageCheckbox.style.fontSize = "12px";
+        clearStorageCheckbox.style.cursor = "pointer";
+        clearStorageCheckbox.style.userSelect = "none";
+        clearStorageCheckbox.style.webkitUserSelect = "none";
+        clearStorageCheckbox.style.mozUserSelect = "none";
+        clearStorageCheckbox.style.msUserSelect = "none";
+        clearStorageCheckbox._checked = false;
+        const toggleCheckbox = () => {
+            clearStorageCheckbox._checked = !clearStorageCheckbox._checked;
+            clearStorageCheckbox.textContent = clearStorageCheckbox._checked ? "✓" : " ";
+        };
+        clearStorageCheckbox.onclick = toggleCheckbox;
+        const checkboxLabel = document.createElement("label");
+        checkboxLabel.textContent = "Also clear all localStorage data";
+        checkboxLabel.style.color = colors.text;
+        checkboxLabel.style.fontSize = "11px";
+        checkboxLabel.style.fontFamily = fontFamily;
+        checkboxLabel.style.cursor = "pointer";
+        checkboxLabel.style.userSelect = "none";
+        checkboxLabel.style.webkitUserSelect = "none";
+        checkboxLabel.style.mozUserSelect = "none";
+        checkboxLabel.style.msUserSelect = "none";
+        checkboxLabel.onclick = toggleCheckbox;
+        checkboxContainer.appendChild(clearStorageCheckbox);
+        checkboxContainer.appendChild(checkboxLabel);
+    }
     const buttonContainer = document.createElement("div");
     buttonContainer.style.display = "flex";
     buttonContainer.style.gap = "10px";
@@ -8952,8 +10155,9 @@ function showConfirmDialog(message, callback) {
     yesButton.onmouseout = () => { yesButton.style.background = colors.buttonBg; yesButton.style.borderColor = colors.buttonBorder; yesButton.style.borderTop = "1px solid " + colors.buttonBorderLight; yesButton.style.borderLeft = "1px solid " + colors.buttonBorderLight; };
     yesButton.onclick = (e) => {
         e.stopPropagation();
+        const clearStorage = showClearStorage && clearStorageCheckbox && clearStorageCheckbox._checked === true;
         document.body.removeChild(dialog);
-        callback(true);
+        callback(true, clearStorage);
     };
     const noButton = document.createElement("button");
     noButton.textContent = "No";
@@ -8978,6 +10182,9 @@ function showConfirmDialog(message, callback) {
     buttonContainer.appendChild(yesButton);
     buttonContainer.appendChild(noButton);
     content.appendChild(messageEl);
+    if (showClearStorage && clearStorageCheckbox) {
+        content.appendChild(checkboxContainer);
+    }
     content.appendChild(buttonContainer);
     dialog.appendChild(content);
     document.body.appendChild(dialog);
@@ -9024,13 +10231,14 @@ function showAddSpriteDialog(editSprite = null) {
     content.style.borderTop = `1px solid ${dialogColors.border === "#0a0a0a" ? "#404040" : dialogColors.border}`;
     content.style.borderLeft = `1px solid ${dialogColors.border === "#0a0a0a" ? "#404040" : dialogColors.border}`;
     content.style.boxShadow = "inset 0 1px 0 rgba(0, 0, 0, 0.3), 0 2px 4px rgba(0, 0, 0, 0.5)";
-    content.style.width = "700px";
+    content.style.width = "780px";
     content.style.maxWidth = "90vw";
-    content.style.height = "600px";
+    content.style.height = "875px";
     content.style.maxHeight = "90vh";
     content.style.display = "flex";
     content.style.flexDirection = "column";
     content.style.overflow = "hidden";
+    content.style.resize = "both";
     content.style.fontFamily = fontFamily;
     content.style.color = dialogColors.text;
     const splitter = document.createElement("div");
@@ -9043,7 +10251,7 @@ function showAddSpriteDialog(editSprite = null) {
     leftPanel.style.flexDirection = "column";
     leftPanel.style.width = "320px";
     leftPanel.style.minWidth = "280px";
-    leftPanel.style.padding = "8px";
+    leftPanel.style.padding = "8px 8px 8px 12px";
     leftPanel.style.overflowY = "auto";
     leftPanel.style.overflowX = "visible";
     leftPanel.style.minHeight = "0";
@@ -9063,27 +10271,27 @@ function showAddSpriteDialog(editSprite = null) {
     row1.style.alignItems = "center";
     row1.style.gap = "4px";
     const borderTopLeft = dialogColors.border === "#0a0a0a" ? "#404040" : dialogColors.border;
-    row1.innerHTML = `<label style="width:100px;font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;">Image Source:</label><select id="addSpriteSource" style="flex:1;min-width:0;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><option>CUSTOM</option><option>SPRITES</option><option>BODY</option><option>HEAD</option><option>SWORD</option><option>SHIELD</option><option>HORSE</option><option>PICS</option><option>ATTR1</option><option>ATTR2</option><option>ATTR3</option><option>ATTR4</option><option>ATTR5</option><option>ATTR6</option><option>ATTR7</option><option>ATTR8</option><option>ATTR9</option><option>ATTR10</option><option>PARAM1</option><option>PARAM2</option><option>PARAM3</option><option>PARAM4</option><option>PARAM5</option><option>PARAM6</option><option>PARAM7</option><option>PARAM8</option><option>PARAM9</option><option>PARAM10</option></select>`;
+    row1.innerHTML = `<label style="width:100px;font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;cursor:default;">Image Source:</label><select id="addSpriteSource" style="flex:1;min-width:0;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><option>CUSTOM</option><option>SPRITES</option><option>BODY</option><option>HEAD</option><option>SWORD</option><option>SHIELD</option><option>HORSE</option><option>PICS</option><option>ATTR1</option><option>ATTR2</option><option>ATTR3</option><option>ATTR4</option><option>ATTR5</option><option>ATTR6</option><option>ATTR7</option><option>ATTR8</option><option>ATTR9</option><option>ATTR10</option><option>PARAM1</option><option>PARAM2</option><option>PARAM3</option><option>PARAM4</option><option>PARAM5</option><option>PARAM6</option><option>PARAM7</option><option>PARAM8</option><option>PARAM9</option><option>PARAM10</option></select>`;
     const row2 = document.createElement("div");
     row2.style.display = "flex";
     row2.style.alignItems = "center";
     row2.style.gap = "4px";
-    row2.innerHTML = `<label style="width:100px;font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;">Image File:</label><input type="text" id="addSpriteImageFile" readonly style="flex:1;min-width:0;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><button id="addSpriteBrowse" style="background:${dialogColors.buttonBg};color:${dialogColors.buttonText};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px 8px;cursor:pointer;font-size:12px;font-family:${fontFamily};flex-shrink:0;box-shadow:inset 0 1px 0 rgba(0,0,0,0.3),0 1px 0 rgba(255,255,255,0.1);">Select</button>`;
+    row2.innerHTML = `<label style="width:100px;font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;cursor:default;">Image File:</label><input type="text" id="addSpriteImageFile" readonly style="flex:1;min-width:0;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><button id="addSpriteBrowse" style="background:${dialogColors.buttonBg};color:${dialogColors.buttonText};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px 8px;cursor:pointer;font-size:12px;font-family:${fontFamily};flex-shrink:0;box-shadow:inset 0 1px 0 rgba(0,0,0,0.3),0 1px 0 rgba(255,255,255,0.1);">Select</button>`;
     const row3 = document.createElement("div");
     row3.style.display = "flex";
     row3.style.alignItems = "center";
     row3.style.gap = "4px";
-    row3.innerHTML = `<label style="width:100px;font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;">Comment:</label><input type="text" id="addSpriteComment" value="New Sprite" style="flex:1;min-width:0;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);">`;
+    row3.innerHTML = `<label style="width:100px;font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;cursor:default;">Comment:</label><input type="text" id="addSpriteComment" value="New Sprite" style="flex:1;min-width:0;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);">`;
     const row4 = document.createElement("div");
     row4.style.display = "flex";
     row4.style.alignItems = "center";
     row4.style.gap = "4px";
-    row4.innerHTML = `<label style="width:100px;font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;">Sprite Index:</label><input type="number" id="addSpriteIndex" value="${currentAnimation.nextSpriteIndex}" style="flex:1;min-width:0;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);">`;
+    row4.innerHTML = `<label style="width:100px;font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;cursor:default;">Sprite Index:</label><input type="number" id="addSpriteIndex" value="${currentAnimation.nextSpriteIndex}" style="flex:1;min-width:0;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);">`;
     const spriteSizeGroup = document.createElement("div");
     spriteSizeGroup.style.border = `1px solid ${dialogColors.border}`;
     spriteSizeGroup.style.borderTop = `1px solid ${borderTopLeft}`;
     spriteSizeGroup.style.borderLeft = `1px solid ${borderTopLeft}`;
-    spriteSizeGroup.style.padding = "6px 2px 2px 2px";
+    spriteSizeGroup.style.padding = "6px 4px 2px 4px";
     spriteSizeGroup.style.marginTop = "8px";
     spriteSizeGroup.style.background = dialogColors.panel;
     spriteSizeGroup.style.boxShadow = "inset 0 1px 0 rgba(0,0,0,0.3)";
@@ -9093,13 +10301,13 @@ function showAddSpriteDialog(editSprite = null) {
     sizeGrid.style.gridTemplateColumns = "auto 1fr";
     sizeGrid.style.gap = "4px 8px";
     sizeGrid.style.alignItems = "center";
-    sizeGrid.innerHTML = `<label style="font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;">Left:</label><input type="number" id="addSpriteLeft" value="0" style="width:100%;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><label style="font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;">Top:</label><input type="number" id="addSpriteTop" value="0" style="width:100%;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><label style="font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;">Width:</label><input type="number" id="addSpriteWidth" value="32" style="width:100%;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><label style="font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;">Height:</label><input type="number" id="addSpriteHeight" value="32" style="width:100%;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><div style="grid-column:1/-1;display:flex;gap:8px;align-items:center;justify-content:flex-end;"><button id="addSpriteAutoDetect" title="Auto Detect Sprite - Click to toggle, then click on image to detect sprite" style="background:${dialogColors.buttonBg};color:${dialogColors.buttonText};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px 8px;cursor:pointer;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3),0 1px 0 rgba(255,255,255,0.1);"><i class="fas fa-magic"></i> Auto Detect Sprite</button></div>`;
+    sizeGrid.innerHTML = `<label style="font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;cursor:default;">Left:</label><input type="number" id="addSpriteLeft" value="0" style="width:100%;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><label style="font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;cursor:default;">Top:</label><input type="number" id="addSpriteTop" value="0" style="width:100%;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><label style="font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;cursor:default;">Width:</label><input type="number" id="addSpriteWidth" value="32" style="width:100%;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><label style="font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;cursor:default;">Height:</label><input type="number" id="addSpriteHeight" value="32" style="width:100%;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><div style="grid-column:1/-1;display:flex;gap:8px;align-items:center;justify-content:flex-end;"><button id="addSpriteAutoDetect" title="Auto Detect Sprite - Click to toggle, then click on image to detect sprite" style="background:${dialogColors.buttonBg};color:${dialogColors.buttonText};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px 8px;cursor:pointer;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3),0 1px 0 rgba(255,255,255,0.1);"><i class="fas fa-magic"></i> Auto Detect Sprite</button></div>`;
     spriteSizeGroup.appendChild(sizeGrid);
     const gridGroup = document.createElement("div");
     gridGroup.style.border = `1px solid ${dialogColors.border}`;
     gridGroup.style.borderTop = `1px solid ${borderTopLeft}`;
     gridGroup.style.borderLeft = `1px solid ${borderTopLeft}`;
-    gridGroup.style.padding = "6px 2px 2px 2px";
+    gridGroup.style.padding = "6px 4px 2px 4px";
     gridGroup.style.marginTop = "8px";
     gridGroup.style.background = dialogColors.panel;
     gridGroup.style.boxShadow = "inset 0 1px 0 rgba(0,0,0,0.3)";
@@ -9109,14 +10317,31 @@ function showAddSpriteDialog(editSprite = null) {
     gridLayout.style.gridTemplateColumns = "auto 1fr";
     gridLayout.style.gap = "4px 8px";
     gridLayout.style.alignItems = "center";
-    gridLayout.innerHTML = `<label style="font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;">Columns:</label><input type="number" id="addSpriteCols" value="1" min="1" style="width:100%;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><label style="font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;">Column Separation:</label><input type="number" id="addSpriteColSep" value="0" style="width:100%;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><label style="font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;">Rows:</label><input type="number" id="addSpriteRows" value="1" min="1" style="width:100%;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><label style="font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;">Row Separation:</label><input type="number" id="addSpriteRowSep" value="0" style="width:100%;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);">`;
+    gridLayout.innerHTML = `<label style="font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;cursor:default;">Columns:</label><input type="number" id="addSpriteCols" value="1" min="1" style="width:100%;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><label style="font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;cursor:default;">Column Separation:</label><input type="number" id="addSpriteColSep" value="0" style="width:100%;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><label style="font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;cursor:default;">Rows:</label><input type="number" id="addSpriteRows" value="1" min="1" style="width:100%;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><label style="font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;cursor:default;">Row Separation:</label><input type="number" id="addSpriteRowSep" value="0" style="width:100%;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);">`;
     gridGroup.appendChild(gridLayout);
+    const effectsGroup = document.createElement("div");
+    effectsGroup.style.border = `1px solid ${dialogColors.border}`;
+    effectsGroup.style.borderTop = `1px solid ${borderTopLeft}`;
+    effectsGroup.style.borderLeft = `1px solid ${borderTopLeft}`;
+    effectsGroup.style.padding = "6px 4px 2px 4px";
+    effectsGroup.style.marginTop = "8px";
+    effectsGroup.style.background = dialogColors.panel;
+    effectsGroup.style.boxShadow = "inset 0 1px 0 rgba(0,0,0,0.3)";
+    effectsGroup.innerHTML = `<div style="font-weight:bold;font-size:12px;margin-bottom:4px;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;">Effects</div>`;
+    const effectsGrid = document.createElement("div");
+    effectsGrid.style.display = "grid";
+    effectsGrid.style.gridTemplateColumns = "auto 1fr";
+    effectsGrid.style.gap = "4px 8px";
+    effectsGrid.style.alignItems = "center";
+    effectsGrid.innerHTML = `<label style="font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;cursor:default;">Color Enabled:</label><span id="addSpriteColorEnabledCheckbox" style="display:inline-block;width:16px;height:16px;text-align:center;border:1px solid ${dialogColors.border === "#0a0a0a" ? "#555" : dialogColors.border};background:${dialogColors.inputBg};vertical-align:middle;line-height:14px;font-size:12px;cursor:pointer;user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;"> </span><label style="font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;cursor:default;">Color:</label><input type="color" id="addSpriteColorSwatch" style="width:100%;height:32px;background:${dialogColors.inputBg};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};cursor:pointer;box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><label style="font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;cursor:default;">Color R:</label><input type="number" id="addSpriteColorR" min="0" max="255" value="255" style="width:100%;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><label style="font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;cursor:default;">Color G:</label><input type="number" id="addSpriteColorG" min="0" max="255" value="255" style="width:100%;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><label style="font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;cursor:default;">Color B:</label><input type="number" id="addSpriteColorB" min="0" max="255" value="255" style="width:100%;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><label style="font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;cursor:default;">Color A:</label><input type="number" id="addSpriteColorA" min="0" max="255" value="255" style="width:100%;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><label style="font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;cursor:default;">Zoom:</label><input type="number" id="addSpriteZoom" min="0.1" max="10" step="0.01" value="1" style="width:100%;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><label style="font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;cursor:default;">Rotate:</label><input type="number" id="addSpriteRotate" min="-360" max="360" step="1" value="0" style="width:100%;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><label style="font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;cursor:default;">Mode:</label><select id="addSpriteMode" style="width:100%;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><option value="">Simple (Off)</option><option value="0">Lights (0)</option><option value="1">Transparency (1)</option><option value="2">Holes (2)</option></select><label style="font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;cursor:default;">StretchX:</label><input type="number" id="addSpriteStretchX" min="-10" max="10" step="0.01" value="1" style="width:100%;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);"><label style="font-size:12px;flex-shrink:0;color:${dialogColors.text};text-shadow:0 0 2px rgba(0,0,0,0.8);user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;cursor:default;">StretchY:</label><input type="number" id="addSpriteStretchY" min="-10" max="10" step="0.01" value="1" style="width:100%;background:${dialogColors.inputBg};color:${dialogColors.text};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:4px;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3);">`;
+    effectsGroup.appendChild(effectsGrid);
     formLayout.appendChild(row1);
     formLayout.appendChild(row2);
     formLayout.appendChild(row3);
     formLayout.appendChild(row4);
     formLayout.appendChild(spriteSizeGroup);
     formLayout.appendChild(gridGroup);
+    formLayout.appendChild(effectsGroup);
     leftPanel.appendChild(formLayout);
     const rightPanel = document.createElement("div");
     rightPanel.style.display = "flex";
@@ -9124,6 +10349,7 @@ function showAddSpriteDialog(editSprite = null) {
     rightPanel.style.flex = "1";
     rightPanel.style.padding = "4px";
     rightPanel.style.minWidth = "0";
+    rightPanel.style.minHeight = "0";
     rightPanel.style.background = dialogColors.panel;
     rightPanel.style.color = dialogColors.text;
     const previewHeader = document.createElement("div");
@@ -9135,15 +10361,36 @@ function showAddSpriteDialog(editSprite = null) {
     rightPanel.appendChild(previewHeader);
     const previewCanvas = document.createElement("canvas");
     previewCanvas.id = "addSpritePreview";
-    previewCanvas.style.flex = "1";
+    previewCanvas.style.flex = "1 1 auto";
+    previewCanvas.style.minHeight = "0";
+    previewCanvas.style.maxHeight = "none";
     previewCanvas.style.border = `1px solid ${dialogColors.border}`;
     previewCanvas.style.borderTop = `1px solid ${dialogColors.border === "#0a0a0a" ? "#404040" : dialogColors.border}`;
     previewCanvas.style.borderLeft = `1px solid ${dialogColors.border === "#0a0a0a" ? "#404040" : dialogColors.border}`;
     previewCanvas.style.background = dialogColors.inputBg;
     previewCanvas.style.cursor = "default";
+    previewCanvas.style.userSelect = "none";
+    previewCanvas.style.webkitUserSelect = "none";
+    previewCanvas.style.mozUserSelect = "none";
+    previewCanvas.style.msUserSelect = "none";
     previewCanvas.style.boxShadow = "inset 0 1px 0 rgba(0,0,0,0.3)";
     previewCanvas.width = 300;
     previewCanvas.height = 400;
+    const updatePreviewCanvasSize = () => {
+        const rect = previewCanvas.getBoundingClientRect();
+        const containerWidth = rect.width;
+        const containerHeight = rect.height;
+        if (containerWidth > 0 && containerHeight > 0) {
+            previewCanvas.width = containerWidth;
+            previewCanvas.height = containerHeight;
+            updateAddSpritePreview();
+        }
+    };
+    const resizeObserver = new ResizeObserver(() => {
+        updatePreviewCanvasSize();
+    });
+    resizeObserver.observe(previewCanvas);
+    setTimeout(() => updatePreviewCanvasSize(), 100);
     rightPanel.appendChild(previewCanvas);
     splitter.appendChild(leftPanel);
     splitter.appendChild(rightPanel);
@@ -9153,7 +10400,7 @@ function showAddSpriteDialog(editSprite = null) {
     buttonBar.style.justifyContent = "flex-end";
     buttonBar.style.gap = "4px";
     buttonBar.style.padding = "4px 8px";
-    buttonBar.innerHTML = `<button id="addSpriteAdd" style="background:${dialogColors.buttonBg};color:${dialogColors.buttonText};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:5px 10px;cursor:pointer;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3),0 1px 0 rgba(255,255,255,0.1);">Add</button><button id="addSpriteCancel" style="background:${dialogColors.buttonBg};color:${dialogColors.buttonText};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:5px 10px;cursor:pointer;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3),0 1px 0 rgba(255,255,255,0.1);">Close</button>`;
+    buttonBar.innerHTML = `<button id="addSpriteAdd" style="background:${dialogColors.buttonBg};color:${dialogColors.buttonText};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:5px 10px;cursor:pointer;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3),0 1px 0 rgba(255,255,255,0.1);">${editSprite ? "Update" : "Add"}</button><button id="addSpriteCancel" style="background:${dialogColors.buttonBg};color:${dialogColors.buttonText};border:1px solid ${dialogColors.border};border-top:1px solid ${borderTopLeft};border-left:1px solid ${borderTopLeft};padding:5px 10px;cursor:pointer;font-size:12px;font-family:${fontFamily};box-shadow:inset 0 1px 0 rgba(0,0,0,0.3),0 1px 0 rgba(255,255,255,0.1);">Close</button>`;
     content.appendChild(buttonBar);
     dialog.appendChild(content);
     document.body.appendChild(dialog);
@@ -9370,10 +10617,13 @@ function showAddSpriteDialog(editSprite = null) {
     const handleSize = 8;
     function getImageToCanvas() {
         if (!previewImg) return {scale: 1, offsetX: 0, offsetY: 0};
-        const baseScale = Math.min(previewCanvas.width / previewImg.width, previewCanvas.height / previewImg.height, 1);
+        const rect = previewCanvas.getBoundingClientRect();
+        const canvasWidth = previewCanvas.width || rect.width;
+        const canvasHeight = previewCanvas.height || rect.height;
+        const baseScale = Math.min(canvasWidth / previewImg.width, canvasHeight / previewImg.height, 1);
         const scale = baseScale * previewZoom;
-        const offsetX = (previewCanvas.width - previewImg.width * scale) / 2 + previewPanX;
-        const offsetY = (previewCanvas.height - previewImg.height * scale) / 2 + previewPanY;
+        const offsetX = (canvasWidth - previewImg.width * scale) / 2 + previewPanX;
+        const offsetY = (canvasHeight - previewImg.height * scale) / 2 + previewPanY;
         return {scale, offsetX, offsetY};
     }
     function canvasToImage(canvasX, canvasY) {
@@ -9837,6 +11087,47 @@ function showAddSpriteDialog(editSprite = null) {
         updateAddSpritePreview();
     }, 1, 1);
     addWheelHandler("addSpriteIndex", () => {}, 1, 0);
+    const syncAddSpriteColorSwatch = () => {
+        const colorSwatch = document.getElementById("addSpriteColorSwatch");
+        const colorR = document.getElementById("addSpriteColorR");
+        const colorG = document.getElementById("addSpriteColorG");
+        const colorB = document.getElementById("addSpriteColorB");
+        if (!colorSwatch || !colorR || !colorG || !colorB) return;
+        const r = Math.max(0, Math.min(255, parseInt(colorR.value) || 255));
+        const g = Math.max(0, Math.min(255, parseInt(colorG.value) || 255));
+        const b = Math.max(0, Math.min(255, parseInt(colorB.value) || 255));
+        const hex = `#${[r, g, b].map(x => x.toString(16).padStart(2, '0')).join('')}`;
+        colorSwatch.value = hex;
+    };
+    const syncAddSpriteColorRGB = () => {
+        const colorSwatch = document.getElementById("addSpriteColorSwatch");
+        const colorR = document.getElementById("addSpriteColorR");
+        const colorG = document.getElementById("addSpriteColorG");
+        const colorB = document.getElementById("addSpriteColorB");
+        if (!colorSwatch || !colorR || !colorG || !colorB) return;
+        const hex = colorSwatch.value;
+        const r = parseInt(hex.substr(1, 2), 16);
+        const g = parseInt(hex.substr(3, 2), 16);
+        const b = parseInt(hex.substr(5, 2), 16);
+        colorR.value = r;
+        colorG.value = g;
+        colorB.value = b;
+    };
+    const addSpriteColorSwatch = document.getElementById("addSpriteColorSwatch");
+    const addSpriteColorR = document.getElementById("addSpriteColorR");
+    const addSpriteColorG = document.getElementById("addSpriteColorG");
+    const addSpriteColorB = document.getElementById("addSpriteColorB");
+    if (addSpriteColorSwatch) addSpriteColorSwatch.onchange = syncAddSpriteColorRGB;
+    if (addSpriteColorR) addSpriteColorR.onchange = syncAddSpriteColorSwatch;
+    if (addSpriteColorG) addSpriteColorG.onchange = syncAddSpriteColorSwatch;
+    if (addSpriteColorB) addSpriteColorB.onchange = syncAddSpriteColorSwatch;
+    const addSpriteColorEnabledCheckbox = document.getElementById("addSpriteColorEnabledCheckbox");
+    if (addSpriteColorEnabledCheckbox) {
+        addSpriteColorEnabledCheckbox.onclick = () => {
+            const newValue = addSpriteColorEnabledCheckbox.textContent.trim() !== "✓";
+            addSpriteColorEnabledCheckbox.textContent = newValue ? "✓" : " ";
+        };
+    }
     document.getElementById("addSpriteAutoDetect").onclick = () => {
         autoDetectActive = !autoDetectActive;
         const btn = document.getElementById("addSpriteAutoDetect");
@@ -9855,6 +11146,60 @@ function showAddSpriteDialog(editSprite = null) {
         document.body.removeChild(fileInput);
     };
     document.getElementById("addSpriteAdd").onclick = () => {
+        if (editSprite) {
+            const oldState = serializeAnimationState();
+            editSprite.type = document.getElementById("addSpriteSource").value;
+            if (editSprite.type === "CUSTOM" && fileInput.files[0]) {
+                editSprite.customImageName = fileInput.files[0].name;
+            }
+            editSprite.comment = document.getElementById("addSpriteComment").value;
+            editSprite.left = parseInt(document.getElementById("addSpriteLeft").value) || 0;
+            editSprite.top = parseInt(document.getElementById("addSpriteTop").value) || 0;
+            editSprite.width = parseInt(document.getElementById("addSpriteWidth").value) || 32;
+            editSprite.height = parseInt(document.getElementById("addSpriteHeight").value) || 32;
+            const colorEnabledCheckbox = document.getElementById("addSpriteColorEnabledCheckbox");
+            const colorEnabled = colorEnabledCheckbox ? colorEnabledCheckbox.textContent.trim() === "✓" : false;
+            const colorR = parseInt(document.getElementById("addSpriteColorR").value) || 255;
+            const colorG = parseInt(document.getElementById("addSpriteColorG").value) || 255;
+            const colorB = parseInt(document.getElementById("addSpriteColorB").value) || 255;
+            const colorA = parseInt(document.getElementById("addSpriteColorA").value) || 255;
+            editSprite.colorEffectEnabled = colorEnabled;
+            editSprite.colorEffect = {r: colorR, g: colorG, b: colorB, a: colorA};
+            editSprite.rotation = parseFloat(document.getElementById("addSpriteRotate").value) || 0;
+            const modeValue = document.getElementById("addSpriteMode").value;
+            editSprite.mode = modeValue === "" ? undefined : parseInt(modeValue);
+            const stretchX = parseFloat(document.getElementById("addSpriteStretchX").value) || 1;
+            const stretchY = parseFloat(document.getElementById("addSpriteStretchY").value) || 1;
+            if (stretchX !== 1 || stretchY !== 1) {
+                editSprite.xscale = stretchX;
+                editSprite.yscale = stretchY;
+            } else {
+                const zoom = parseFloat(document.getElementById("addSpriteZoom").value) || 1;
+                editSprite.xscale = zoom;
+                editSprite.yscale = zoom;
+            }
+            editSprite.updateBoundingBox();
+            const newState = serializeAnimationState();
+            addUndoCommand({
+                description: "Update Sprite",
+                oldState: oldState,
+                newState: newState,
+                undo: () => restoreAnimationState(oldState),
+                redo: () => restoreAnimationState(newState)
+            });
+            if (previewImg && fileInput.files[0]) {
+                loadImage(fileInput.files[0]).then(() => {
+                    updateSpritesList();
+                    redraw();
+                });
+            }
+            updateSpritesList();
+            redraw();
+            saveSession();
+            document.body.removeChild(dialog);
+            document.body.removeChild(fileInput);
+            return;
+        }
         const spriteIndex = parseInt(document.getElementById("addSpriteIndex").value) || currentAnimation.nextSpriteIndex++;
         const cols = parseInt(document.getElementById("addSpriteCols").value) || 1;
         const rows = parseInt(document.getElementById("addSpriteRows").value) || 1;
@@ -9866,10 +11211,8 @@ function showAddSpriteDialog(editSprite = null) {
         const height = parseInt(document.getElementById("addSpriteHeight").value) || 32;
         const spriteW = previewImg ? Math.floor((selectionBox.w - (cols - 1) * colSep) / cols) : width;
         const spriteH = previewImg ? Math.floor((selectionBox.h - (rows - 1) * rowSep) / rows) : height;
-
         const totalSprites = rows * cols;
         const conflicts = currentAnimation.getSpriteConflicts(spriteIndex, totalSprites);
-
         if (conflicts.length > 0) {
             const conflictList = conflicts.map(c => `• Index ${c.index}: ${c.comment}`).join('\n');
             showConfirmDialog(`${conflicts.length} sprite${conflicts.length > 1 ? 's' : ''} with these indices already exist${conflicts.length > 1 ? '' : 's'}:\n\n${conflictList}\n\nDo you want to overwrite ${conflicts.length > 1 ? 'them' : 'it'}?`, (confirmed) => {
@@ -9878,9 +11221,7 @@ function showAddSpriteDialog(editSprite = null) {
             });
             return;
         }
-
         addSpritesAfterConfirmation();
-
         function addSpritesAfterConfirmation() {
             const oldState = serializeAnimationState();
             let index = spriteIndex;
@@ -9897,6 +11238,27 @@ function showAddSpriteDialog(editSprite = null) {
                     sprite.top = selectionBox.y + row * (spriteH + rowSep);
                     sprite.width = spriteW;
                     sprite.height = spriteH;
+                    const colorEnabledCheckbox = document.getElementById("addSpriteColorEnabledCheckbox");
+            const colorEnabled = colorEnabledCheckbox ? colorEnabledCheckbox.textContent.trim() === "✓" : false;
+                    const colorR = parseInt(document.getElementById("addSpriteColorR").value) || 255;
+                    const colorG = parseInt(document.getElementById("addSpriteColorG").value) || 255;
+                    const colorB = parseInt(document.getElementById("addSpriteColorB").value) || 255;
+                    const colorA = parseInt(document.getElementById("addSpriteColorA").value) || 255;
+                    sprite.colorEffectEnabled = colorEnabled;
+                    sprite.colorEffect = {r: colorR, g: colorG, b: colorB, a: colorA};
+                    sprite.rotation = parseFloat(document.getElementById("addSpriteRotate").value) || 0;
+                    const modeValue = document.getElementById("addSpriteMode").value;
+                    sprite.mode = modeValue === "" ? undefined : parseInt(modeValue);
+                    const stretchX = parseFloat(document.getElementById("addSpriteStretchX").value) || 1;
+                    const stretchY = parseFloat(document.getElementById("addSpriteStretchY").value) || 1;
+                    if (stretchX !== 1 || stretchY !== 1) {
+                        sprite.xscale = stretchX;
+                        sprite.yscale = stretchY;
+                    } else {
+                        const zoom = parseFloat(document.getElementById("addSpriteZoom").value) || 1;
+                        sprite.xscale = zoom;
+                        sprite.yscale = zoom;
+                    }
                     sprite.updateBoundingBox();
                     currentAnimation.addSprite(sprite);
                 }
@@ -9932,6 +11294,34 @@ function showAddSpriteDialog(editSprite = null) {
         document.getElementById("addSpriteTop").value = editSprite.top;
         document.getElementById("addSpriteWidth").value = editSprite.width;
         document.getElementById("addSpriteHeight").value = editSprite.height;
+        const addSpriteColorEnabledCheckbox = document.getElementById("addSpriteColorEnabledCheckbox");
+        if (addSpriteColorEnabledCheckbox) addSpriteColorEnabledCheckbox.textContent = editSprite.colorEffectEnabled ? "✓" : " ";
+        const r = editSprite.colorEffect ? editSprite.colorEffect.r : 255;
+        const g = editSprite.colorEffect ? editSprite.colorEffect.g : 255;
+        const b = editSprite.colorEffect ? editSprite.colorEffect.b : 255;
+        document.getElementById("addSpriteColorR").value = r;
+        document.getElementById("addSpriteColorG").value = g;
+        document.getElementById("addSpriteColorB").value = b;
+        document.getElementById("addSpriteColorA").value = editSprite.colorEffect ? editSprite.colorEffect.a : 255;
+        const addSpriteColorSwatch = document.getElementById("addSpriteColorSwatch");
+        if (addSpriteColorSwatch) {
+            const hex = `#${[r, g, b].map(x => x.toString(16).padStart(2, '0')).join('')}`;
+            addSpriteColorSwatch.value = hex;
+        }
+        document.getElementById("addSpriteRotate").value = editSprite.rotation || 0;
+        const addSpriteModeEl = document.getElementById("addSpriteMode");
+        if (addSpriteModeEl) {
+            addSpriteModeEl.value = editSprite.mode !== undefined && editSprite.mode !== null ? editSprite.mode.toString() : "";
+        }
+        if (editSprite.xscale === editSprite.yscale) {
+            document.getElementById("addSpriteZoom").value = editSprite.xscale || 1;
+            document.getElementById("addSpriteStretchX").value = 1;
+            document.getElementById("addSpriteStretchY").value = 1;
+        } else {
+            document.getElementById("addSpriteZoom").value = 1;
+            document.getElementById("addSpriteStretchX").value = editSprite.xscale || 1;
+            document.getElementById("addSpriteStretchY").value = editSprite.yscale || 1;
+        }
         selectionBox.x = editSprite.left;
         selectionBox.y = editSprite.top;
         selectionBox.w = editSprite.width;
@@ -9956,6 +11346,10 @@ function showAddSpriteDialog(editSprite = null) {
         selectionBox.y = top;
         selectionBox.w = width;
         selectionBox.h = height;
+        const addSpriteModeEl = document.getElementById("addSpriteMode");
+        if (addSpriteModeEl) {
+            addSpriteModeEl.value = "";
+        }
     }
     if (fileInput.files[0]) updateAddSpritePreview();
 }

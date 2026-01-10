@@ -7,6 +7,9 @@
     <link rel="icon" type="image/x-icon" href="favicon.ico">
     <script src="anieditor.js" defer></script>
     <style>
+        :root {
+            --slider-box-shadow: inset 0px 2px 0px 0px #5B5B5B, inset 0px -2px 0px 0px #5B5B5B, inset -2px 0px 0px 0px #5B5B5B, inset 2px 0px 0px 0px #5B5B5B, 0px 2px 0px 0px #1E1E1E, 2px 0px 0px 0px #191919, -2px 0px 0px 0px #191919, 0px -2px 0px 0px #191919, 0px 4px 0px 0px rgba(25, 25, 25, .8);
+        }
         .fas {
             display: inline-block;
             width: 16px;
@@ -42,14 +45,18 @@
         .fa-arrow-right { background-image: url("icons/arrow-right.svg"); }
         .fa-layer-group { background-image: url("icons/layer-group.svg"); }
         .fa-crosshairs { background-image: url("icons/crosshairs.svg"); }
+        .fa-border-all { background-image: url("icons/border-all.svg"); }
+        .fa-magic { background-image: url("icons/magnet.svg"); transform: scaleX(-1); }
         .fa-pencil { background-image: url("icons/pencil.svg"); }
+        .input-shadow {
+        }
         .fa-minus { background-image: url("icons/minus.svg"); }
         .fa-arrow-up { background-image: url("icons/arrow-up.svg"); }
         .fa-arrow-down { background-image: url("icons/arrow-down.svg"); }
         .fa-play { background-image: url("icons/play.svg"); }
         .fa-pause { background-image: url("icons/pause.svg"); }
         .fa-stop { background-image: url("icons/stop.svg"); }
-        .fa-magic { background-image: url("icons/magic.svg"); }
+        .fa-magic { background-image: url("icons/magnet.svg"); transform: scaleX(-1); }
         @font-face {
             font-family: "Silkscreen";
             src: url("fonts/Silkscreen-Regular.ttf") format("truetype");
@@ -217,7 +224,6 @@
             border-left: 1px solid #404040;
             border-bottom: none;
             color: #e0e0e0;
-            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3);
             margin-bottom: -1px;
         }
         .tab-close { margin-left: 8px; cursor: pointer; font-size: 20px; font-weight: bold; }
@@ -299,7 +305,6 @@
             align-items: center;
             justify-content: flex-start;
             height: 105px;
-            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3);
         }
         .sprite-item.selected { border-color: #00ff00; border-width: 2px; }
         .sprite-item canvas { 
@@ -333,13 +338,17 @@
         }
         .sprite-settings label {
             display: block;
-            margin-bottom: 8px;
+            margin-bottom: 6px;
+            margin-top: 10px;
             font-size: 12px;
             font-family: "chevyray", monospace;
             border: none;
             border-bottom: none;
             border-top: none;
             box-shadow: none;
+        }
+        .sprite-settings label:first-child {
+            margin-top: 4px;
         }
         .sprite-settings label + .slider-group {
             margin-top: 5px;
@@ -358,10 +367,9 @@
             border-bottom: 1px solid #0a0a0a;
             color: #e0e0e0;
             padding: 8px;
-            margin-bottom: 8px;
+            margin-bottom: 12px;
             font-family: "chevyray", monospace;
             font-size: 12px;
-            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3);
         }
         .sprite-settings input[type="range"] {
             margin-bottom: 0;
@@ -407,12 +415,12 @@
         .sprite-settings .slider-group input[type="range"]::-webkit-slider-runnable-track {
             background: transparent;
             height: 8px;
-            box-shadow: inset 0px 2px 0px 0px #5B5B5B, inset 0px -2px 0px 0px #5B5B5B, inset -2px 0px 0px 0px #5B5B5B, inset 2px 0px 0px 0px #5B5B5B, 0px 2px 0px 0px #1E1E1E, 2px 0px 0px 0px #191919, -2px 0px 0px 0px #191919, 0px -2px 0px 0px #191919, 0px 4px 0px 0px rgba(25, 25, 25, .8);
+            box-shadow: var(--slider-box-shadow);
         }
         .sprite-settings .slider-group input[type="range"]::-moz-range-track {
             background: transparent;
             height: 8px;
-            box-shadow: inset 0px 2px 0px 0px #5B5B5B, inset 0px -2px 0px 0px #5B5B5B, inset -2px 0px 0px 0px #5B5B5B, inset 2px 0px 0px 0px #5B5B5B, 0px 2px 0px 0px #1E1E1E, 2px 0px 0px 0px #191919, -2px 0px 0px 0px #191919, 0px -2px 0px 0px #191919, 0px 4px 0px 0px rgba(25, 25, 25, .8);
+            box-shadow: var(--slider-box-shadow);
         }
         .sprite-settings .slider-group input[type="range"]::-webkit-slider-thumb {
             -webkit-appearance: none;
@@ -423,7 +431,7 @@
             border: none;
             cursor: pointer;
             margin-top: -8px;
-            box-shadow: inset 0px 2px 0px 0px #5B5B5B, inset 0px -2px 0px 0px #5B5B5B, inset -2px 0px 0px 0px #5B5B5B, inset 2px 0px 0px 0px #5B5B5B, 0px 2px 0px 0px #1E1E1E, 2px 0px 0px 0px #191919, -2px 0px 0px 0px #191919, 0px -2px 0px 0px #191919, 0px 4px 0px 0px rgba(25, 25, 25, .8);
+            box-shadow: var(--slider-box-shadow);
         }
         .sprite-settings .slider-group input[type="range"]::-moz-range-thumb {
             width: 16px;
@@ -431,7 +439,7 @@
             background: #2b2d31;
             border: 3px solid #404248;
             cursor: pointer;
-            box-shadow: inset 0px 2px 0px 0px #5B5B5B, inset 0px -2px 0px 0px #5B5B5B, inset -2px 0px 0px 0px #5B5B5B, inset 2px 0px 0px 0px #5B5B5B, 0px 2px 0px 0px #1E1E1E, 2px 0px 0px 0px #191919, -2px 0px 0px 0px #191919, 0px -2px 0px 0px #191919, 0px 4px 0px 0px rgba(25, 25, 25, .8);
+            box-shadow: var(--slider-box-shadow);
         }
         .sprite-settings .slider-group input[type="number"] {
             width: 100%;
@@ -443,7 +451,6 @@
             padding: 8px;
             font-family: "chevyray", monospace;
             font-size: 12px;
-            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3);
         }
         .center-panel {
             flex: 1;
@@ -494,7 +501,7 @@
             background: rgba(0, 0, 0, 0.9);
         }
         .canvas-controls button.active {
-            background: rgba(0, 100, 0, 0.8);
+            background: #888888 !important;
         }
         .canvas-controls {
             position: absolute;
@@ -515,6 +522,10 @@
             font-size: 12px;
             box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3), 0 1px 0 rgba(255, 255, 255, 0.1);
         }
+        .timeline-wrapper {
+            width: 100%;
+            box-sizing: border-box;
+        }
         .timeline-container {
             background: #2b2b2b;
             border-top: 1px solid #0a0a0a;
@@ -524,6 +535,7 @@
             max-height: 400px;
             flex: 0 0 224px;
             width: 100%;
+            max-width: 100%;
             display: flex !important;
             flex-direction: column;
             visibility: visible !important;
@@ -564,12 +576,12 @@
         .timeline-slider::-webkit-slider-runnable-track {
             background: transparent;
             height: 8px;
-            box-shadow: inset 0px 2px 0px 0px #5B5B5B, inset 0px -2px 0px 0px #5B5B5B, inset -2px 0px 0px 0px #5B5B5B, inset 2px 0px 0px 0px #5B5B5B, 0px 2px 0px 0px #1E1E1E, 2px 0px 0px 0px #191919, -2px 0px 0px 0px #191919, 0px -2px 0px 0px #191919, 0px 4px 0px 0px rgba(25, 25, 25, .8);
+            box-shadow: var(--slider-box-shadow);
         }
         .timeline-slider::-moz-range-track {
             background: transparent;
             height: 8px;
-            box-shadow: inset 0px 2px 0px 0px #5B5B5B, inset 0px -2px 0px 0px #5B5B5B, inset -2px 0px 0px 0px #5B5B5B, inset 2px 0px 0px 0px #5B5B5B, 0px 2px 0px 0px #1E1E1E, 2px 0px 0px 0px #191919, -2px 0px 0px 0px #191919, 0px -2px 0px 0px #191919, 0px 4px 0px 0px rgba(25, 25, 25, .8);
+            box-shadow: var(--slider-box-shadow);
         }
         .timeline-slider::-webkit-slider-thumb {
             -webkit-appearance: none;
@@ -580,7 +592,7 @@
             border: none;
             cursor: pointer;
             margin-top: -8px;
-            box-shadow: inset 0px 2px 0px 0px #5B5B5B, inset 0px -2px 0px 0px #5B5B5B, inset -2px 0px 0px 0px #5B5B5B, inset 2px 0px 0px 0px #5B5B5B, 0px 2px 0px 0px #1E1E1E, 2px 0px 0px 0px #191919, -2px 0px 0px 0px #191919, 0px -2px 0px 0px #191919, 0px 4px 0px 0px rgba(25, 25, 25, .8);
+            box-shadow: var(--slider-box-shadow);
         }
         .timeline-slider::-moz-range-thumb {
             width: 16px;
@@ -588,7 +600,7 @@
             background: #2b2d31;
             border: 3px solid #404248;
             cursor: pointer;
-            box-shadow: inset 0px 2px 0px 0px #5B5B5B, inset 0px -2px 0px 0px #5B5B5B, inset -2px 0px 0px 0px #5B5B5B, inset 2px 0px 0px 0px #5B5B5B, 0px 2px 0px 0px #1E1E1E, 2px 0px 0px 0px #191919, -2px 0px 0px 0px #191919, 0px -2px 0px 0px #191919, 0px 4px 0px 0px rgba(25, 25, 25, .8);
+            box-shadow: var(--slider-box-shadow);
         }
         .timeline-view {
             flex: 1 1 0;
@@ -600,11 +612,11 @@
             position: relative;
             overflow: hidden;
             width: 100%;
+            max-width: 100%;
             display: block !important;
             visibility: visible !important;
             opacity: 1 !important;
             box-sizing: border-box;
-            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3);
         }
         #timelineCanvas {
             display: block !important;
@@ -614,7 +626,9 @@
             z-index: 1;
             background: #353535;
             width: 100%;
+            max-width: 100%;
             height: 100%;
+            box-sizing: border-box;
         }
         .playback-controls {
             display: flex !important;
@@ -688,7 +702,6 @@
             padding: 8px;
             font-family: "chevyray", monospace;
             font-size: 12px;
-            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3);
         }
         .settings-group {
             border: 1px solid #0a0a0a;
@@ -697,7 +710,6 @@
             margin: 8px;
             padding: 8px;
             background: #2b2b2b;
-            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3);
         }
         .settings-group h3 {
             font-size: 12px;
@@ -727,7 +739,6 @@
             margin-bottom: 8px;
             font-family: "chevyray", monospace;
             font-size: 12px;
-            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3);
         }
         #settingsUIScaleNumber {
             margin-bottom: 0;
@@ -748,7 +759,6 @@
             margin-bottom: 8px;
             font-family: "chevyray", monospace;
             font-size: 12px;
-            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3);
         }
         .settings-group button {
             background: #1a1a1a;
@@ -855,7 +865,6 @@
             margin-bottom: 8px;
             font-family: "chevyray", monospace;
             font-size: 12px;
-            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3);
         }
         .item-settings input[type="range"] {
             margin-bottom: 0;
@@ -883,12 +892,12 @@
         .item-settings .slider-group input[type="range"]::-webkit-slider-runnable-track {
             background: transparent;
             height: 8px;
-            box-shadow: inset 0px 2px 0px 0px #5B5B5B, inset 0px -2px 0px 0px #5B5B5B, inset -2px 0px 0px 0px #5B5B5B, inset 2px 0px 0px 0px #5B5B5B, 0px 2px 0px 0px #1E1E1E, 2px 0px 0px 0px #191919, -2px 0px 0px 0px #191919, 0px -2px 0px 0px #191919, 0px 4px 0px 0px rgba(25, 25, 25, .8);
+            box-shadow: var(--slider-box-shadow);
         }
         .item-settings .slider-group input[type="range"]::-moz-range-track {
             background: transparent;
             height: 8px;
-            box-shadow: inset 0px 2px 0px 0px #5B5B5B, inset 0px -2px 0px 0px #5B5B5B, inset -2px 0px 0px 0px #5B5B5B, inset 2px 0px 0px 0px #5B5B5B, 0px 2px 0px 0px #1E1E1E, 2px 0px 0px 0px #191919, -2px 0px 0px 0px #191919, 0px -2px 0px 0px #191919, 0px 4px 0px 0px rgba(25, 25, 25, .8);
+            box-shadow: var(--slider-box-shadow);
         }
         .item-settings .slider-group input[type="range"]::-webkit-slider-thumb {
             -webkit-appearance: none;
@@ -899,7 +908,7 @@
             border: none;
             cursor: pointer;
             margin-top: -8px;
-            box-shadow: inset 0px 2px 0px 0px #5B5B5B, inset 0px -2px 0px 0px #5B5B5B, inset -2px 0px 0px 0px #5B5B5B, inset 2px 0px 0px 0px #5B5B5B, 0px 2px 0px 0px #1E1E1E, 2px 0px 0px 0px #191919, -2px 0px 0px 0px #191919, 0px -2px 0px 0px #191919, 0px 4px 0px 0px rgba(25, 25, 25, .8);
+            box-shadow: var(--slider-box-shadow);
         }
         .item-settings .slider-group input[type="range"]::-moz-range-thumb {
             width: 16px;
@@ -907,7 +916,7 @@
             background: #2b2d31;
             border: 3px solid #404248;
             cursor: pointer;
-            box-shadow: inset 0px 2px 0px 0px #5B5B5B, inset 0px -2px 0px 0px #5B5B5B, inset -2px 0px 0px 0px #5B5B5B, inset 2px 0px 0px 0px #5B5B5B, 0px 2px 0px 0px #1E1E1E, 2px 0px 0px 0px #191919, -2px 0px 0px 0px #191919, 0px -2px 0px 0px #191919, 0px 4px 0px 0px rgba(25, 25, 25, .8);
+            box-shadow: var(--slider-box-shadow);
         }
         .item-settings .slider-group {
             display: flex;
@@ -930,16 +939,31 @@
             padding: 8px;
             font-family: "chevyray", monospace;
             font-size: 12px;
-            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3);
         }
         .item-settings .slider-group .number-input-wrapper {
             width: 100% !important;
         }
         .item-controls {
-            display: none;
-            gap: 2px;
+            display: flex;
+            gap: 8px;
             margin-bottom: 8px;
             margin-left: -4px;
+            align-items: flex-start;
+        }
+        .item-controls-layer {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .item-controls-direction {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            align-items: center;
+        }
+        .item-controls-direction-row {
+            display: flex;
+            gap: 2px;
         }
         .item-controls button {
             background: #353535;
@@ -949,10 +973,18 @@
             color: #e0e0e0;
             padding: 8px;
             cursor: pointer;
-            flex: 1;
+            width: 32px;
+            height: 32px;
             font-family: "chevyray", monospace;
             font-size: 12px;
             box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3), 0 1px 0 rgba(255, 255, 255, 0.1);
+            border-radius: 2px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .item-controls button i {
+            color: inherit;
         }
         .item-controls button:hover { background: #404040; border-color: #555; }
         .item-controls button:active { background: #1a1a1a; border-color: #0a0a0a; box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5); }
@@ -970,7 +1002,6 @@
             display: flex;
             align-items: center;
             gap: 8px;
-            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3);
         }
         .sounds-list li input {
             flex: 1;
@@ -982,7 +1013,6 @@
             padding: 8px;
             font-family: "chevyray", monospace;
             font-size: 12px;
-            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3);
         }
         .sprite-preview {
             width: 100%;
@@ -991,7 +1021,6 @@
             border: 1px solid #0a0a0a;
             border-top: 1px solid #404040;
             border-left: 1px solid #404040;
-            box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3);
         }
         #spritePreviewCanvas {
             display: block;
@@ -1133,10 +1162,18 @@
             outline: none !important;
         }
         .canvas-controls button:hover { background: #404040; border-color: #555; }
-        .canvas-controls button:active {
+        .canvas-controls button:active:not(.active) {
             background: #1a1a1a !important;
             border-color: #0a0a0a !important;
             box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5) !important;
+        }
+        .canvas-controls button.active {
+            background: #888888 !important;
+        }
+        .canvas-controls button.active:hover,
+        .canvas-controls button.active:active,
+        .canvas-controls button.active:focus {
+            background: #888888 !important;
         }
         #mainCanvas {
             touch-action: none;
@@ -1352,6 +1389,96 @@
             image-rendering: -moz-crisp-edges;
             image-rendering: crisp-edges;
         }
+        #settingsUIScale {
+            background: transparent;
+            border: none;
+            height: 8px;
+            -webkit-appearance: none;
+            appearance: none;
+            cursor: pointer;
+        }
+        #settingsUIScale::-webkit-slider-runnable-track {
+            background: transparent;
+            height: 8px;
+            box-shadow: var(--slider-box-shadow);
+        }
+        #settingsUIScale::-moz-range-track {
+            background: transparent;
+            height: 8px;
+            box-shadow: var(--slider-box-shadow);
+        }
+        #settingsUIScale::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 16px;
+            height: 24px;
+            background: #2b2d31;
+            border: none;
+            cursor: pointer;
+            margin-top: -8px;
+            box-shadow: var(--slider-box-shadow);
+        }
+        #settingsUIScale::-moz-range-thumb {
+            width: 16px;
+            height: 24px;
+            background: #2b2d31;
+            border: 3px solid #404248;
+            cursor: pointer;
+            box-shadow: var(--slider-box-shadow);
+        }
+        #settingsSelectionBorderThickness {
+            background: transparent;
+            border: none;
+            height: 8px;
+            -webkit-appearance: none;
+            appearance: none;
+            cursor: pointer;
+        }
+        #settingsSelectionBorderThickness::-webkit-slider-runnable-track {
+            background: transparent;
+            height: 8px;
+            box-shadow: var(--slider-box-shadow);
+        }
+        #settingsSelectionBorderThickness::-moz-range-track {
+            background: transparent;
+            height: 8px;
+            box-shadow: var(--slider-box-shadow);
+        }
+        #settingsSelectionBorderThickness::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 16px;
+            height: 24px;
+            background: #2b2d31;
+            border: none;
+            cursor: pointer;
+            margin-top: -8px;
+            box-shadow: var(--slider-box-shadow);
+        }
+        #settingsSelectionBorderThickness::-moz-range-thumb {
+            width: 16px;
+            height: 24px;
+            background: #2b2d31;
+            border: 3px solid #404248;
+            cursor: pointer;
+            box-shadow: var(--slider-box-shadow);
+        }
+        #settingsSelectionBorderThicknessNumber {
+            width: 100%;
+            background: #1a1a1a;
+            border: 1px solid #0a0a0a;
+            border-top: 1px solid #404040;
+            border-left: 1px solid #404040;
+            color: #e0e0e0;
+            padding: 8px;
+            font-family: "chevyray", monospace;
+            font-size: 12px;
+        }
+        #settingsSelectionBorderThicknessNumber {
+            margin-bottom: 0;
+            margin-top: 10px;
+            padding: 6px;
+        }
     </style>
 </head>
 <body>
@@ -1392,6 +1519,10 @@
             <button title="Redo" id="btnRedo"><i class="fas fa-redo"></i></button>
             <div style="width: 1px; background: #1a1a1a; margin: 0 4px;"></div>
             <button title="Reset Editor" id="btnReset"><i class="fas fa-recycle"></i></button>
+            <div style="width: 1px; background: #1a1a1a; margin: 0 4px;"></div>
+            <button title="Zoom Out" id="btnZoomOut"><i class="fas fa-minus"></i></button>
+            <span id="mainCanvasZoomLevel" style="font-size: 12px; min-width: 40px; text-align: right; color: #e0e0e0; user-select: none; padding: 0 2px 0 4px; display: inline-flex; align-items: center; justify-content: flex-end;">1.0x</span>
+            <button title="Zoom In" id="btnZoomIn"><i class="fas fa-plus"></i></button>
             <div style="width: 1px; background: #1a1a1a; margin: 0 4px;"></div>
             <button title="About" id="btnAbout"><i class="fas fa-info-circle"></i></button>
         </div>
@@ -1466,6 +1597,18 @@
                                 <input type="range" id="rotationSlider" min="-360" max="360" step="1" value="0">
                                 <input type="number" id="rotation" min="-360" max="360" step="1" value="0">
                                 </div>
+                                <label>Zoom:</label>
+                                <div class="slider-group">
+                                    <input type="range" id="zoomSlider" min="0.1" max="10" step="0.01" value="1">
+                                    <input type="number" id="zoom" step="0.01" value="1">
+                                </div>
+                                <label>Mode:</label>
+                                <select id="spriteMode" style="width: 100%; background: #1a1a1a; border: 1px solid #0a0a0a; border-top: 1px solid #404040; border-left: 1px solid #404040; color: #ffffff; padding: 8px; font-family: 'chevyray', monospace; font-size: 12px;">
+                                    <option value="" selected>Simple (Off)</option>
+                                    <option value="0">Lights (0)</option>
+                                    <option value="1">Transparency (1)</option>
+                                    <option value="2">Holes (2)</option>
+                                </select>
                                 <label>Rect:</label>
                                 <div style="display: grid; grid-template-columns: auto 1fr; gap: 4px 8px; align-items: center;">
                                     <label>X:</label>
@@ -1478,10 +1621,23 @@
                                     <input type="number" id="spriteHeight">
                                 </div>
                                 <label style="display: flex; align-items: center; gap: 8px;">
-                                    Color:
-                                    <input type="checkbox" id="colorEffect">
-                                    <input type="color" id="colorSwatch" style="width: 60px; height: 32px; border: 1px solid #0a0a0a; border-top: 1px solid #404040; border-left: 1px solid #404040; cursor: pointer; flex-shrink: 0; padding: 0; box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3);">
+                                    Color Enabled:
+                                    <span id="colorEffectCheckbox" style="display: inline-block; width: 16px; height: 16px; text-align: center; border: 1px solid #555; background: #1a1a1a; vertical-align: middle; line-height: 14px; font-size: 12px; cursor: pointer; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;"> </span>
                                 </label>
+                                <label style="display: flex; align-items: center; gap: 8px; margin-top: 4px;">
+                                    Color:
+                                    <input type="color" id="colorSwatch" style="flex: 1; min-width: 0; height: 32px; border: 1px solid #0a0a0a; border-top: 1px solid #404040; border-left: 1px solid #404040; cursor: pointer; padding: 0; box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3);">
+                                </label>
+                                <div style="display: grid; grid-template-columns: auto 1fr; gap: 4px 8px; align-items: center; margin-top: 4px;">
+                                    <label style="font-size: 12px;">R:</label>
+                                    <input type="number" id="colorR" min="0" max="255" value="255" style="width: 100%; background: #1a1a1a; border: 1px solid #0a0a0a; border-top: 1px solid #404040; border-left: 1px solid #404040; color: #e0e0e0; padding: 4px; font-family: 'chevyray', monospace; font-size: 12px; box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3);">
+                                    <label style="font-size: 12px;">G:</label>
+                                    <input type="number" id="colorG" min="0" max="255" value="255" style="width: 100%; background: #1a1a1a; border: 1px solid #0a0a0a; border-top: 1px solid #404040; border-left: 1px solid #404040; color: #e0e0e0; padding: 4px; font-family: 'chevyray', monospace; font-size: 12px; box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3);">
+                                    <label style="font-size: 12px;">B:</label>
+                                    <input type="number" id="colorB" min="0" max="255" value="255" style="width: 100%; background: #1a1a1a; border: 1px solid #0a0a0a; border-top: 1px solid #404040; border-left: 1px solid #404040; color: #e0e0e0; padding: 4px; font-family: 'chevyray', monospace; font-size: 12px; box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3);">
+                                    <label style="font-size: 12px;">A:</label>
+                                    <input type="number" id="colorA" min="0" max="255" value="255" style="width: 100%; background: #1a1a1a; border: 1px solid #0a0a0a; border-top: 1px solid #404040; border-left: 1px solid #404040; color: #e0e0e0; padding: 4px; font-family: 'chevyray', monospace; font-size: 12px; box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.3);">
+                                </div>
                                 <div class="item-controls">
                                     <button id="btnAttachmentBack"><i class="fas fa-arrow-left"></i></button>
                                     <button id="btnAttachmentForward"><i class="fas fa-arrow-right"></i></button>
@@ -1499,8 +1655,10 @@
                         <div class="canvas-container">
                             <canvas id="mainCanvas"></canvas>
                             <div class="canvas-controls">
-                                <button id="btnOnionSkin" title="Onion Skin"><i class="fas fa-layer-group"></i></button>
+                                <button id="btnOnionSkin" title="Onion Skin (show previous/next frame)"><i class="fas fa-layer-group"></i></button>
                                 <button id="btnCenterView" title="Center View"><i class="fas fa-crosshairs"></i></button>
+                                <button id="btnSplitView" title="Split View (4 Directions)"><i class="fas fa-border-all"></i></button>
+                                <button id="btnMirroredActions" title="Mirrored Actions (edit sprites across all directions)" style="display: none;"><i class="fas fa-magic"></i></button>
                             </div>
                         </div>
                     </div>
@@ -1520,9 +1678,9 @@
                     </div>
                     <div class="settings-group">
                         <h3>Ani Settings</h3>
-                        <label><input type="checkbox" id="singleDir"> Single Dir</label>
-                        <label><input type="checkbox" id="looped" checked> Looped</label>
-                        <label><input type="checkbox" id="continous" checked> Continuous</label>
+                        <label style="display: flex; align-items: center; gap: 8px;"><span id="singleDirCheckbox" style="display: inline-block; width: 16px; height: 16px; text-align: center; border: 1px solid #555; background: #1a1a1a; vertical-align: middle; line-height: 14px; font-size: 12px; cursor: pointer; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;"> </span> Single Dir</label>
+                        <label style="display: flex; align-items: center; gap: 8px;"><span id="loopedCheckbox" style="display: inline-block; width: 16px; height: 16px; text-align: center; border: 1px solid #555; background: #1a1a1a; vertical-align: middle; line-height: 14px; font-size: 12px; cursor: pointer; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">✓</span> Looped</label>
+                        <label style="display: flex; align-items: center; gap: 8px;"><span id="continousCheckbox" style="display: inline-block; width: 16px; height: 16px; text-align: center; border: 1px solid #555; background: #1a1a1a; vertical-align: middle; line-height: 14px; font-size: 12px; cursor: pointer; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">✓</span> Continuous</label>
                         <label>Next Ani:</label>
                         <input type="text" id="nextAni">
                         <button id="btnDefaults" style="width: 100%; margin-bottom: 8px; background: #1a1a1a; border: 1px solid #0a0a0a; border-top: 1px solid #404040; border-left: 1px solid #404040; color: #ffffff; padding: 8px; font-family: 'chevyray', monospace; font-size: 12px;">Defaults</button>
@@ -1535,7 +1693,7 @@
                         <button id="btnEditScript" style="width: 100%; background: #1a1a1a; border: 1px solid #0a0a0a; border-top: 1px solid #404040; border-left: 1px solid #404040; color: #ffffff; padding: 8px; font-family: 'chevyray', monospace; font-size: 12px;">Edit Script</button>
                     </div>
                     <div class="settings-group" id="historyGroup" style="display: none;">
-                        <h3 style="display: flex; align-items: center; gap: 8px;">History <input type="checkbox" id="historyLoggingToggle"></h3>
+                        <h3 style="display: flex; align-items: center; gap: 8px;">History <span id="historyLoggingToggleCheckbox" style="display: inline-block; width: 16px; height: 16px; text-align: center; border: 1px solid #555; background: #1a1a1a; vertical-align: middle; line-height: 14px; font-size: 12px; cursor: pointer; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;"> </span></h3>
                         <div id="historyList" style="max-height: 300px; overflow-y: auto; background: #1a1a1a; padding: 4px; border: 1px solid #555; font-size: 12px; font-family: 'chevyray', monospace; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">
                         </div>
                         <div style="display: flex; gap: 4px; margin-top: 4px;">
@@ -1555,32 +1713,23 @@
                             <label>Layer:</label>
                             <input type="number" id="itemLayer" min="0" value="0">
                             <div class="item-controls">
-                                <button id="btnItemLayerUp" title="Move Forward"><i class="fas fa-plus"></i></button>
-                                <button id="btnItemLayerDown" title="Move Backward"><i class="fas fa-minus"></i></button>
-                                <button id="btnItemUp"><i class="fas fa-arrow-up"></i></button>
-                                <button id="btnItemDown"><i class="fas fa-arrow-down"></i></button>
-                                <button id="btnItemLeft"><i class="fas fa-arrow-left"></i></button>
-                                <button id="btnItemRight"><i class="fas fa-arrow-right"></i></button>
+                                <div class="item-controls-layer">
+                                    <button id="btnItemLayerDown" title="Move Backward"><i class="fas fa-minus"></i></button>
+                                    <button id="btnItemLayerUp" title="Move Forward"><i class="fas fa-plus"></i></button>
+                                </div>
+                                <div class="item-controls-direction">
+                                    <button id="btnItemUp"><i class="fas fa-arrow-up"></i></button>
+                                    <div class="item-controls-direction-row">
+                                        <button id="btnItemLeft"><i class="fas fa-arrow-left"></i></button>
+                                        <button id="btnItemDown"><i class="fas fa-arrow-down"></i></button>
+                                        <button id="btnItemRight"><i class="fas fa-arrow-right"></i></button>
+                                    </div>
+                                </div>
                             </div>
                             <label>Pos X:</label>
                             <input type="number" id="itemX" step="0.01">
                             <label>Pos Y:</label>
                             <input type="number" id="itemY" step="0.01">
-                            <label>X Scale:</label>
-                            <div class="slider-group">
-                                <input type="range" id="itemXScaleSlider" min="-10" max="10" step="0.01" value="1">
-                                <input type="number" id="itemXScale" step="0.01" value="1">
-                            </div>
-                            <label>Y Scale:</label>
-                            <div class="slider-group">
-                                <input type="range" id="itemYScaleSlider" min="-10" max="10" step="0.01" value="1">
-                                <input type="number" id="itemYScale" step="0.01" value="1">
-                            </div>
-                            <label>Rotation:</label>
-                            <div class="slider-group">
-                                <input type="range" id="itemRotationSlider" min="-360" max="360" step="1" value="0">
-                                <input type="number" id="itemRotation" min="-360" max="360" step="1" value="0">
-                            </div>
                         </div>
                     </div>
                     <div class="settings-group">
@@ -1602,6 +1751,7 @@
             <div class="splitter-handle" id="canvasTimelineSplitter" style="width: 100%; height: 4px; cursor: row-resize; background: #1a1a1a; flex: 0 0 4px; position: relative;">
                 <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 40px; height: 2px; background: #555; border-radius: 1px;"></div>
             </div>
+            <div class="timeline-wrapper">
             <div class="timeline-container">
                 <div class="timeline-header">
                     <label>Frames:</label>
@@ -1622,6 +1772,7 @@
                     <button id="btnPasteAfter" title="Paste After"><i class="fas fa-paste"></i></button>
                     <button id="btnReverseFrame" title="Reverse Frame"><i class="fas fa-exchange-alt"></i></button>
                 </div>
+            </div>
             </div>
         </div>
     <input type="file" id="fileInput" accept=".gani" style="display: none;">
@@ -1664,67 +1815,42 @@
                         <input type="number" id="settingsUIScaleNumber" min="0.5" max="2" step="0.05" value="1">
                     </div>
                 </div>
-                <style>
-                    #settingsUIScale {
-                        background: transparent;
-                        border: none;
-                        height: 8px;
-                        -webkit-appearance: none;
-                        appearance: none;
-                        cursor: pointer;
-                    }
-                    #settingsUIScale::-webkit-slider-runnable-track {
-                        background: transparent;
-                        height: 8px;
-                        box-shadow: inset 0px 2px 0px 0px #5B5B5B, inset 0px -2px 0px 0px #5B5B5B, inset -2px 0px 0px 0px #5B5B5B, inset 2px 0px 0px 0px #5B5B5B, 0px 2px 0px 0px #1E1E1E, 2px 0px 0px 0px #191919, -2px 0px 0px 0px #191919, 0px -2px 0px 0px #191919, 0px 4px 0px 0px rgba(25, 25, 25, .8);
-                    }
-                    #settingsUIScale::-moz-range-track {
-                        background: transparent;
-                        height: 8px;
-                        box-shadow: inset 0px 2px 0px 0px #5B5B5B, inset 0px -2px 0px 0px #5B5B5B, inset -2px 0px 0px 0px #5B5B5B, inset 2px 0px 0px 0px #5B5B5B, 0px 2px 0px 0px #1E1E1E, 2px 0px 0px 0px #191919, -2px 0px 0px 0px #191919, 0px -2px 0px 0px #191919, 0px 4px 0px 0px rgba(25, 25, 25, .8);
-                    }
-                    #settingsUIScale::-webkit-slider-thumb {
-                        -webkit-appearance: none;
-                        appearance: none;
-                        width: 16px;
-                        height: 24px;
-                        background: #2b2d31;
-                        border: none;
-                        cursor: pointer;
-                        margin-top: -8px;
-                        box-shadow: inset 0px 2px 0px 0px #5B5B5B, inset 0px -2px 0px 0px #5B5B5B, inset -2px 0px 0px 0px #5B5B5B, inset 2px 0px 0px 0px #5B5B5B, 0px 2px 0px 0px #1E1E1E, 2px 0px 0px 0px #191919, -2px 0px 0px 0px #191919, 0px -2px 0px 0px #191919, 0px 4px 0px 0px rgba(25, 25, 25, .8);
-                    }
-                    #settingsUIScale::-moz-range-thumb {
-                        width: 16px;
-                        height: 24px;
-                        background: #2b2d31;
-                        border: 3px solid #404248;
-                        cursor: pointer;
-                        box-shadow: inset 0px 2px 0px 0px #5B5B5B, inset 0px -2px 0px 0px #5B5B5B, inset -2px 0px 0px 0px #5B5B5B, inset 2px 0px 0px 0px #5B5B5B, 0px 2px 0px 0px #1E1E1E, 2px 0px 0px 0px #191919, -2px 0px 0px 0px #191919, 0px -2px 0px 0px #191919, 0px 4px 0px 0px rgba(25, 25, 25, .8);
-                    }
-                </style>
                 <div style="margin-bottom: 16px; border-top: 1px solid #0a0a0a; padding-top: 16px;">
                     <div style="margin-bottom: 12px; font-family: 'chevyray', monospace; font-size: 12px; color: #e0e0e0;">Options:</div>
                     <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-family: 'chevyray', monospace; font-size: 12px; color: #e0e0e0; cursor: pointer;">
-                        <input type="checkbox" id="settingsPixelRendering" checked style="cursor: pointer;">
+                        <span id="settingsPixelRenderingCheckbox" style="display: inline-block; width: 16px; height: 16px; text-align: center; border: 1px solid #555; background: #1a1a1a; vertical-align: middle; line-height: 14px; font-size: 12px; cursor: pointer; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">✓</span>
                         <span>Pixel Perfect Rendering</span>
                     </label>
                     <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-family: 'chevyray', monospace; font-size: 12px; color: #e0e0e0; cursor: pointer;">
-                        <input type="checkbox" id="settingsAutoSave" checked style="cursor: pointer;">
+                        <span id="settingsAutoSaveCheckbox" style="display: inline-block; width: 16px; height: 16px; text-align: center; border: 1px solid #555; background: #1a1a1a; vertical-align: middle; line-height: 14px; font-size: 12px; cursor: pointer; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">✓</span>
                         <span>Auto Save</span>
                     </label>
                     <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-family: 'chevyray', monospace; font-size: 12px; color: #e0e0e0; cursor: pointer;">
-                        <input type="checkbox" id="settingsShowGrid" checked style="cursor: pointer;">
+                        <span id="settingsShowGridCheckbox" style="display: inline-block; width: 16px; height: 16px; text-align: center; border: 1px solid #555; background: #1a1a1a; vertical-align: middle; line-height: 14px; font-size: 12px; cursor: pointer; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">✓</span>
                         <span>Show Grid</span>
                     </label>
                     <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-family: 'chevyray', monospace; font-size: 12px; color: #e0e0e0; cursor: pointer;">
-                        <input type="checkbox" id="settingsGifAnimations" checked style="cursor: pointer;">
+                        <span id="settingsGifAnimationsCheckbox" style="display: inline-block; width: 16px; height: 16px; text-align: center; border: 1px solid #555; background: #1a1a1a; vertical-align: middle; line-height: 14px; font-size: 12px; cursor: pointer; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">✓</span>
                         <span>GIF Animations</span>
                     </label>
                     <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-family: 'chevyray', monospace; font-size: 12px; color: #e0e0e0; cursor: pointer;">
-                        <input type="checkbox" id="settingsLightEffects" checked style="cursor: pointer;">
+                        <span id="settingsLightEffectsCheckbox" style="display: inline-block; width: 16px; height: 16px; text-align: center; border: 1px solid #555; background: #1a1a1a; vertical-align: middle; line-height: 14px; font-size: 12px; cursor: pointer; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">✓</span>
                         <span>Light Effects</span>
                     </label>
+                </div>
+                <div style="margin-bottom: 16px; border-top: 1px solid #0a0a0a; padding-top: 16px;">
+                    <div style="margin-bottom: 12px; font-family: 'chevyray', monospace; font-size: 12px; color: #e0e0e0;">Selection Border:</div>
+                    <div style="margin-bottom: 12px;">
+                        <label style="display: block; margin-bottom: 8px; font-family: 'chevyray', monospace; font-size: 12px; color: #e0e0e0;">Border Color:</label>
+                        <input type="color" id="settingsSelectionBorderColor" value="#00ff00" style="width: 100%; height: 32px; background: #1a1a1a; border: 1px solid #0a0a0a; border-top: 1px solid #404040; border-left: 1px solid #404040; cursor: pointer;">
+                    </div>
+                    <div style="margin-bottom: 12px;">
+                        <label style="display: block; margin-bottom: 8px; font-family: 'chevyray', monospace; font-size: 12px; color: #e0e0e0;">Border Thickness:</label>
+                        <div style="display: flex; flex-direction: column; gap: 4px;">
+                            <input type="range" id="settingsSelectionBorderThickness" min="1" max="10" step="1" value="2" style="flex: 1; background: transparent; height: 8px; cursor: pointer; -webkit-appearance: none; appearance: none; border: none;">
+                            <input type="number" id="settingsSelectionBorderThicknessNumber" min="1" max="10" step="1" value="2">
+                        </div>
+                    </div>
                 </div>
             </div>
             <div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; margin-top: 16px; border-top: 1px solid #0a0a0a; padding-top: 16px; flex-shrink: 0; min-width: 0; align-items: flex-start;">
